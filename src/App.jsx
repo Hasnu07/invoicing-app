@@ -88,6 +88,8 @@ const DEFAULT_THEME = {
   stampImage: '',
   stampPosition: 'bottom-right',
   stampOpacity: 0.85,
+  stampPosX: null,
+  stampPosY: null,
   accentStyle: 'band', // band | line | soft
   customHTML: '',       // user-provided HTML for the 'custom' template (token-filled)
   customHTMLBuy: '',    // brand-styled acquisition-note (purchase invoice) template
@@ -127,16 +129,46 @@ function resolveStampImageSrc(theme) {
   return '';
 }
 
+const STAMP_THEME_KEYS = ['showStamp', 'stampTemplate', 'stampImage', 'stampPosition', 'stampOpacity', 'stampPosX', 'stampPosY'];
+
+function pickStampTheme(theme) {
+  const o = {};
+  for (const k of STAMP_THEME_KEYS) {
+    if (!theme || theme[k] === undefined || theme[k] === null) continue;
+    if (k === 'showStamp' || theme[k] !== '') o[k] = theme[k];
+  }
+  return o;
+}
+
+function stampPresetXY(position) {
+  if (position === 'bottom-left') return { x: 16, y: 88 };
+  if (position === 'center') return { x: 50, y: 50 };
+  return { x: 84, y: 88 };
+}
+
+function getStampXY(theme) {
+  if (theme.stampPosX != null && theme.stampPosY != null) {
+    return { x: clamp(num(theme.stampPosX), 0, 100), y: clamp(num(theme.stampPosY), 0, 100) };
+  }
+  return stampPresetXY(theme.stampPosition || 'bottom-right');
+}
+
+function stampPositionStyle(theme) {
+  if (theme.stampPosition === 'custom' || (theme.stampPosX != null && theme.stampPosY != null)) {
+    const { x, y } = getStampXY(theme);
+    return `left:${x}%;top:${y}%;transform:translate(-50%,-50%);`;
+  }
+  const pos = theme.stampPosition || 'bottom-right';
+  if (pos === 'bottom-left') return 'bottom:22mm;left:16mm;';
+  if (pos === 'center') return 'top:50%;left:50%;transform:translate(-50%,-50%);';
+  return 'bottom:22mm;right:16mm;';
+}
+
 function buildStampOverlayHTML(theme) {
   if (!theme.showStamp) return '';
   const src = resolveStampImageSrc(theme);
   if (!src) return '';
-  const pos = theme.stampPosition || 'bottom-right';
-  const posStyle = pos === 'bottom-left'
-    ? 'bottom:22mm;left:16mm;'
-    : pos === 'center'
-      ? 'top:50%;left:50%;transform:translate(-50%,-50%);'
-      : 'bottom:22mm;right:16mm;';
+  const posStyle = stampPositionStyle(theme);
   const opacity = theme.stampOpacity != null ? theme.stampOpacity : 0.85;
   return `<div class="stamp-overlay-block" style="position:absolute;${posStyle}z-index:10;pointer-events:none;width:55mm;print-color-adjust:exact;-webkit-print-color-adjust:exact;"><img src="${src.replace(/"/g, '')}" alt="" style="width:100%;height:auto;opacity:${opacity};mix-blend-mode:multiply;display:block;"/></div>`;
 }
@@ -357,7 +389,8 @@ function companyName(c) {
   return esc((c.name || '') + (fg ? '' : '')) + (fg ? `<span class="fg">${esc(c.forma)}</span>` : '');
 }
 
-function buildDocumentHTML(doc, company, client, settings) {
+function buildDocumentHTML(doc, company, client, settings, opts = {}) {
+  const omitStamp = !!opts.omitStamp;
   const t = effectiveTheme(company, doc);
   const meta = DOC_TYPES[doc.type] || DOC_TYPES.fattura;
   const cur = doc.currency || (settings && settings.currency) || 'EUR';
@@ -486,7 +519,7 @@ function buildDocumentHTML(doc, company, client, settings) {
   }
   const legalHTML = legalBits.length ? `<div class="legal">${legalBits.join(' · ')}</div>` : '';
   const footerText = t.footerText || (company && company.footerText) || '';
-  const stampHTML = buildStampOverlayHTML(t);
+  const stampHTML = omitStamp ? '' : buildStampOverlayHTML(t);
   const stampFixedHTML = stampHTML ? stampHTML.replace('position:absolute;', 'position:fixed;') : '';
 
   // ---- Logo ----
@@ -2201,12 +2234,18 @@ function EmptyState({ icon: Icon, title, sub, action }) {
 }
 
 // Document preview scaled to A4 (single source = buildDocumentHTML)
-function DocPreview({ html }) {
+function DocPreview({ html, stampTheme, onStampMove, interactiveStamp }) {
   const wrapRef = useRef(null);
   const frameRef = useRef(null);
+  const dragRef = useRef(null);
   const [scale, setScale] = useState(0.6);
   const [docH, setDocH] = useState(1123);
   const A4W = 794;
+  const stampSrc = stampTheme && stampTheme.showStamp ? resolveStampImageSrc(stampTheme) : '';
+  const showDragStamp = interactiveStamp && stampSrc;
+  const stampXY = stampTheme ? getStampXY(stampTheme) : { x: 84, y: 88 };
+  const stampOpacity = stampTheme && stampTheme.stampOpacity != null ? stampTheme.stampOpacity : 0.85;
+
   useEffect(() => {
     const fit = () => { if (wrapRef.current) { const w = wrapRef.current.clientWidth; setScale(Math.min(1, Math.max(0.2, w / A4W))); } };
     fit();
@@ -2214,15 +2253,167 @@ function DocPreview({ html }) {
     const id = setTimeout(fit, 60);
     return () => { window.removeEventListener('resize', fit); clearTimeout(id); };
   }, []);
+
   const onLoad = () => {
     try { const d = frameRef.current.contentDocument; const h = Math.max(1123, d.body.scrollHeight + 24); setDocH(h); } catch (e) { /* noop */ }
   };
+
+  const moveStampFromEvent = (e) => {
+    if (!onStampMove || !wrapRef.current) return;
+    const layer = wrapRef.current.querySelector('.preview-stamp-layer');
+    if (!layer) return;
+    const rect = layer.getBoundingClientRect();
+    if (!rect.width || !rect.height) return;
+    const x = clamp(((e.clientX - rect.left) / rect.width) * 100, 3, 97);
+    const y = clamp(((e.clientY - rect.top) / rect.height) * 100, 3, 97);
+    onStampMove({ stampPosition: 'custom', stampPosX: Math.round(x * 10) / 10, stampPosY: Math.round(y * 10) / 10 });
+  };
+
+  const onStampPointerDown = (e) => {
+    if (!onStampMove) return;
+    e.preventDefault();
+    dragRef.current = true;
+    e.currentTarget.setPointerCapture(e.pointerId);
+    moveStampFromEvent(e);
+  };
+  const onStampPointerMove = (e) => {
+    if (!dragRef.current) return;
+    moveStampFromEvent(e);
+  };
+  const onStampPointerUp = (e) => {
+    dragRef.current = false;
+    try { e.currentTarget.releasePointerCapture(e.pointerId); } catch (err) { /* noop */ }
+  };
+
+  const frameW = A4W * scale;
+  const frameH = docH * scale;
+
   return (
     <div className="preview-wrap" ref={wrapRef}>
-      <div className="preview-scaler" style={{ height: docH * scale }}>
+      <div className="preview-scaler" style={{ height: frameH, width: frameW, margin: '0 auto', position: 'relative' }}>
         <iframe ref={frameRef} title="Document preview" srcDoc={html} onLoad={onLoad}
-          style={{ width: A4W, height: docH, border: 'none', transform: `scale(${scale})`, transformOrigin: 'top left', background: '#fff' }} />
+          style={{ width: A4W, height: docH, border: 'none', transform: `scale(${scale})`, transformOrigin: 'top left', background: '#fff', display: 'block' }} />
+        {showDragStamp && (
+          <div className="preview-stamp-layer" style={{ position: 'absolute', top: 0, left: 0, width: frameW, height: frameH, pointerEvents: 'none' }}>
+            <img
+              src={stampSrc}
+              alt=""
+              className="preview-stamp-handle"
+              draggable={false}
+              style={{
+                position: 'absolute',
+                left: `${stampXY.x}%`,
+                top: `${stampXY.y}%`,
+                transform: 'translate(-50%, -50%)',
+                width: `${(55 / 210) * 100}%`,
+                opacity: stampOpacity,
+                mixBlendMode: 'multiply',
+                pointerEvents: 'auto',
+                cursor: onStampMove ? 'grab' : 'default',
+                touchAction: 'none',
+              }}
+              onPointerDown={onStampPointerDown}
+              onPointerMove={onStampPointerMove}
+              onPointerUp={onStampPointerUp}
+              onPointerCancel={onStampPointerUp}
+            />
+          </div>
+        )}
       </div>
+      {showDragStamp && onStampMove && <p className="preview-stamp-hint">Drag the stamp on the preview to reposition it.</p>}
+    </div>
+  );
+}
+
+function DocumentStampBar({ theme, company, onChange, onLoadCompanyDefault, onSaveCompanyDefault }) {
+  const set = (sub) => onChange(sub);
+  const onUploadStamp = async (e) => {
+    const f = e.target.files && e.target.files[0]; if (!f) return;
+    const err = validateUploadFile(f, { mimes: ['image/jpeg', 'image/png', 'image/webp', 'image/gif', 'image/svg+xml'] });
+    if (err) return;
+    try {
+      const url = await fileToScaledDataURL(f, 360);
+      const safe = safeImageSrc(url) || url;
+      set({ showStamp: true, stampImage: safe, stampTemplate: '', stampPosition: 'custom', stampPosX: theme.stampPosX ?? 84, stampPosY: theme.stampPosY ?? 88 });
+    } catch (err) { /* noop */ }
+    e.target.value = '';
+  };
+  const companyHasStamp = company && (company.theme || {}).showStamp;
+
+  return (
+    <div className="doc-stamp-bar">
+      <div className="doc-stamp-bar-head">
+        <Toggle checked={!!theme.showStamp} onChange={(v) => set({ showStamp: v })} label="Stamp on this invoice" />
+        <div className="doc-stamp-bar-actions">
+          {companyHasStamp && (
+            <button type="button" className="link-btn" onClick={onLoadCompanyDefault}>Use company default</button>
+          )}
+          {onSaveCompanyDefault && (
+            <button type="button" className="link-btn" onClick={onSaveCompanyDefault}>Save as company default</button>
+          )}
+        </div>
+      </div>
+      {theme.showStamp && (
+        <>
+          <div className="stamp-preset-grid stamp-bar-grid">
+            <button type="button" className={cx('stamp-preset-btn', !theme.stampImage && !theme.stampTemplate && 'on')} onClick={() => set({ stampTemplate: '', stampImage: '', showStamp: false })}>
+              <span className="stamp-none">—</span>
+              <span className="stamp-preset-name">None</span>
+            </button>
+            {STAMP_PRESETS.map((preset) => (
+              <button key={preset.id} type="button" className={cx('stamp-preset-btn', !theme.stampImage && theme.stampTemplate === preset.id && 'on')} onClick={() => {
+                const xy = getStampXY({ ...theme, stampPosition: theme.stampPosition || 'bottom-right' });
+                set({ showStamp: true, stampTemplate: preset.id, stampImage: '', stampPosition: theme.stampPosition || 'bottom-right', stampPosX: xy.x, stampPosY: xy.y });
+              }}>
+                <img src={stampPresetToDataUrl(preset)} alt={preset.label} />
+                <span className="stamp-preset-name">{preset.label}</span>
+              </button>
+            ))}
+          </div>
+          <div className="stamp-upload-row">
+            <label className="btn btn-subtle btn-sm filebtn">
+              <Upload size={13} />
+              <span>Upload stamp</span>
+              <input type="file" accept="image/*" onChange={onUploadStamp} hidden />
+            </label>
+            {theme.stampImage && (
+              <>
+                <img src={theme.stampImage} className="stamp-custom-preview" alt="custom stamp" />
+                <Btn variant="ghost" size="sm" icon={Trash2} onClick={() => set({ stampImage: '', stampTemplate: '' })}>Remove</Btn>
+              </>
+            )}
+          </div>
+          <div className="stamp-controls stamp-bar-controls">
+            <Field label="Quick position">
+              <Segmented
+                value={theme.stampPosition === 'custom' ? 'custom' : (theme.stampPosition || 'bottom-right')}
+                onChange={(v) => {
+                  if (v === 'custom') {
+                    const xy = getStampXY(theme);
+                    set({ stampPosition: 'custom', stampPosX: xy.x, stampPosY: xy.y });
+                  } else {
+                    const xy = stampPresetXY(v);
+                    set({ stampPosition: v, stampPosX: xy.x, stampPosY: xy.y });
+                  }
+                }}
+                options={[
+                  { value: 'bottom-right', label: 'Bottom right' },
+                  { value: 'bottom-left', label: 'Bottom left' },
+                  { value: 'center', label: 'Center' },
+                  { value: 'custom', label: 'Custom' },
+                ]}
+              />
+            </Field>
+            <Field label="Opacity">
+              <div className="stamp-opacity-row">
+                <input type="range" min="0.2" max="1" step="0.05" value={theme.stampOpacity != null ? theme.stampOpacity : 0.85} onChange={(e) => set({ stampOpacity: parseFloat(e.target.value) })} />
+                <span className="mono stamp-opacity-val">{Math.round((theme.stampOpacity != null ? theme.stampOpacity : 0.85) * 100)}%</span>
+              </div>
+            </Field>
+          </div>
+          <p className="hint-block" style={{ margin: 0 }}>Stamp settings are saved with this invoice. Use &ldquo;Save as company default&rdquo; to apply the same stamp to future {company ? company.name : 'company'} documents.</p>
+        </>
+      )}
     </div>
   );
 }
@@ -2545,7 +2736,10 @@ function ThemeEditor({ value, onChange }) {
               <span className="stamp-preset-name">None</span>
             </button>
             {STAMP_PRESETS.map((preset) => (
-              <button key={preset.id} type="button" className={cx('stamp-preset-btn', !value.stampImage && value.stampTemplate === preset.id && 'on')} onClick={() => set({ stampTemplate: preset.id, stampImage: '' })}>
+              <button key={preset.id} type="button" className={cx('stamp-preset-btn', !value.stampImage && value.stampTemplate === preset.id && 'on')} onClick={() => {
+                const xy = getStampXY({ ...value, stampPosition: value.stampPosition || 'bottom-right' });
+                set({ stampTemplate: preset.id, stampImage: '', stampPosition: value.stampPosition || 'bottom-right', stampPosX: xy.x, stampPosY: xy.y });
+              }}>
                 <img src={stampPresetToDataUrl(preset)} alt={preset.label} />
                 <span className="stamp-preset-name">{preset.label}</span>
               </button>
@@ -2567,7 +2761,24 @@ function ThemeEditor({ value, onChange }) {
           </div>
           <div className="stamp-controls">
             <Field label="Position">
-              <Segmented value={value.stampPosition || 'bottom-right'} onChange={(v) => set({ stampPosition: v })} options={[{ value: 'bottom-right', label: 'Bottom right' }, { value: 'bottom-left', label: 'Bottom left' }, { value: 'center', label: 'Center' }]} />
+              <Segmented
+                value={value.stampPosition === 'custom' ? 'custom' : (value.stampPosition || 'bottom-right')}
+                onChange={(v) => {
+                  if (v === 'custom') {
+                    const xy = getStampXY(value);
+                    set({ stampPosition: 'custom', stampPosX: xy.x, stampPosY: xy.y });
+                  } else {
+                    const xy = stampPresetXY(v);
+                    set({ stampPosition: v, stampPosX: xy.x, stampPosY: xy.y });
+                  }
+                }}
+                options={[
+                  { value: 'bottom-right', label: 'Bottom right' },
+                  { value: 'bottom-left', label: 'Bottom left' },
+                  { value: 'center', label: 'Center' },
+                  { value: 'custom', label: 'Custom' },
+                ]}
+              />
             </Field>
             <Field label="Opacity">
               <div className="stamp-opacity-row">
@@ -2743,7 +2954,7 @@ function QuickClientModal({ open, onClose, onCreate }) {
 // ============================================================================
 //  DOCUMENT EDITOR
 // ============================================================================
-function DocumentEditor({ store, editingId, draftType, onSave, onCancel, onUpsertClient, onAddClientFile, onDeleteClientFile, onNotify }) {
+function DocumentEditor({ store, editingId, draftType, onSave, onCancel, onUpsertClient, onAddClientFile, onDeleteClientFile, onUpdateCompany, onNotify }) {
   const existing = editingId ? (store.documents || []).find((d) => d.id === editingId) : null;
   const [draft, setDraft] = useState(() => (existing ? JSON.parse(JSON.stringify(existing)) : freshDoc(store, draftType || 'fattura')));
   const [numTouched, setNumTouched] = useState(!!existing);
@@ -2763,12 +2974,29 @@ function DocumentEditor({ store, editingId, draftType, onSave, onCancel, onUpser
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [draft.companyId, draft.type, draft.date, numTouched]);
 
+  const patchTheme = (sub) => patch('themeOverride', { ...(draft.themeOverride || {}), ...sub });
+
   const company = companyById(store, draft.companyId);
   const client = clientById(store, draft.clientId);
   const meta = DOC_TYPES[draft.type] || DOC_TYPES.fattura;
   const totals = meta.money ? computeTotals(draft) : null;
   const themeVal = effectiveTheme(company, draft);
   const html = useMemo(() => buildDocumentHTML(draft, company, client, store.settings), [draft, company, client, store.settings]);
+  const previewHtml = useMemo(() => {
+    const stampActive = themeVal.showStamp && resolveStampImageSrc(themeVal);
+    return buildDocumentHTML(draft, company, client, store.settings, { omitStamp: stampActive });
+  }, [draft, company, client, store.settings, themeVal.showStamp, themeVal.stampTemplate, themeVal.stampImage, themeVal.stampPosition, themeVal.stampPosX, themeVal.stampPosY]);
+
+  const loadCompanyStamp = () => {
+    if (!company) return;
+    const coTheme = { ...DEFAULT_THEME, ...(company.theme || {}) };
+    patchTheme(pickStampTheme(coTheme));
+  };
+  const saveCompanyStamp = () => {
+    if (!company || !onUpdateCompany) return;
+    onUpdateCompany({ ...company, theme: { ...DEFAULT_THEME, ...(company.theme || {}), ...pickStampTheme(themeVal) } });
+    if (onNotify) onNotify(`Stamp saved as default for ${company.name}.`, 'warn');
+  };
 
   const setLines = (lines) => patch('lines', lines);
   const addLine = () => setLines([...(draft.lines || []), blankLine()]);
@@ -2824,6 +3052,13 @@ function DocumentEditor({ store, editingId, draftType, onSave, onCancel, onUpser
                 <Field label="Subject / heading" full hint="Optional title line shown on the document"><TextInput value={draft.subject || ''} onChange={(v) => patch('subject', v)} placeholder="e.g. Rolex Daytona | Cartier" /></Field>
                 <Field label="Contact person"><TextInput value={draft.contactPerson || ''} onChange={(v) => patch('contactPerson', v)} /></Field>
               </div>
+              <DocumentStampBar
+                theme={themeVal}
+                company={company}
+                onChange={patchTheme}
+                onLoadCompanyDefault={loadCompanyStamp}
+                onSaveCompanyDefault={company && onUpdateCompany ? saveCompanyStamp : null}
+              />
             </div>
 
             {draft.type === 'acquisto' && (
@@ -2955,7 +3190,7 @@ function DocumentEditor({ store, editingId, draftType, onSave, onCancel, onUpser
               <Btn variant="subtle" size="sm" icon={Printer} onClick={() => printHTML(html)}>Print / PDF</Btn>
               <Btn variant="subtle" size="sm" icon={FileDown} onClick={() => downloadBlob(`${docNumberLabel(draft).replace(/[^\w\-]+/g, '_')}.html`, html)}>HTML</Btn>
             </div>
-            <DocPreview html={html} />
+            <DocPreview html={previewHtml} stampTheme={themeVal} interactiveStamp onStampMove={patchTheme} />
           </div>
         )}
       </div>
@@ -3717,6 +3952,13 @@ const APP_CSS = `
 .stamp-opacity-row{display:flex;align-items:center;gap:10px;}
 .stamp-opacity-row input[type=range]{flex:1;accent-color:var(--gold);}
 .stamp-opacity-val{min-width:36px;text-align:right;font-size:12px;color:var(--ink-2);}
+.doc-stamp-bar{margin-top:14px;padding-top:14px;border-top:1px solid var(--line);display:flex;flex-direction:column;gap:12px;}
+.doc-stamp-bar-head{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:10px;}
+.doc-stamp-bar-actions{display:flex;flex-wrap:wrap;gap:12px;}
+.stamp-bar-grid{grid-template-columns:repeat(auto-fill,minmax(58px,1fr));}
+.stamp-bar-controls{grid-template-columns:1fr;}
+.preview-stamp-hint{margin:8px 0 0;font-size:11px;color:var(--ink-4);text-align:center;}
+.preview-stamp-handle:active{cursor:grabbing !important;}
 
 /* ---------- settings ---------- */
 .data-actions{display:flex;gap:10px;flex-wrap:wrap;}
@@ -4240,7 +4482,7 @@ export default function App() {
   );
 
   let editorNode = null;
-  if (docEditor) editorNode = <DocumentEditor store={store} editingId={docEditor.id} draftType={docEditor.draftType} onSave={upsertDoc} onCancel={() => setDocEditor(null)} onUpsertClient={upsertClient} onAddClientFile={addClientFile} onDeleteClientFile={deleteClientFile} onNotify={notify} />;
+  if (docEditor) editorNode = <DocumentEditor store={store} editingId={docEditor.id} draftType={docEditor.draftType} onSave={upsertDoc} onCancel={() => setDocEditor(null)} onUpsertClient={upsertClient} onAddClientFile={addClientFile} onDeleteClientFile={deleteClientFile} onUpdateCompany={upsertCompany} onNotify={notify} />;
   else if (companyEditor) editorNode = <CompanyEditor store={store} editingId={companyEditor.id} onSave={upsertCompany} onCancel={() => setCompanyEditor(null)} />;
 
   let viewNode = null;
