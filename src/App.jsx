@@ -155,7 +155,9 @@ function getStampXY(theme) {
 
 function stampPositionStyle(theme) {
   const { x, y } = getStampXY(theme);
-  return `left:${x}%;top:${y}%;transform:translate(-50%,-50%);`;
+  const leftMm = Math.round((x / 100) * 2100) / 10;
+  const topMm = Math.round((y / 100) * 2970) / 10;
+  return `left:${leftMm}mm;top:${topMm}mm;transform:translate(-50%,-50%);`;
 }
 
 function buildStampOverlayHTML(theme) {
@@ -167,24 +169,43 @@ function buildStampOverlayHTML(theme) {
   return `<div class="stamp-overlay-block" style="position:absolute;${posStyle}z-index:10;pointer-events:none;width:55mm;print-color-adjust:exact;-webkit-print-color-adjust:exact;"><img src="${src.replace(/"/g, '')}" alt="" style="width:100%;height:auto;opacity:${opacity};mix-blend-mode:multiply;display:block;"/></div>`;
 }
 
-const STAMP_DOC_ROOT_CSS = 'html,body{position:relative;height:auto;}body{min-height:100%;}.stamp-overlay-block{position:absolute!important;}@media print{.stamp-overlay-block{position:absolute!important;}}';
+const STAMP_PAGE_CSS = '.page{position:relative!important;overflow:visible!important;}.stamp-overlay-block{position:absolute!important;z-index:10;}@media print{.page{position:relative!important;overflow:visible!important;}.stamp-overlay-block{position:absolute!important;print-color-adjust:exact;-webkit-print-color-adjust:exact;}}';
 
-function ensureStampDocumentRoot(html) {
-  if (!html || html.includes('.stamp-overlay-block{position:absolute!important;')) return html;
+function ensureStampPageCSS(html) {
+  if (!html || html.includes('.stamp-overlay-block{position:absolute!important;z-index:10;}')) return html;
   if (/<style/i.test(html)) {
-    return html.replace(/<style([^>]*)>/i, `<style$1>${STAMP_DOC_ROOT_CSS}`);
+    return html.replace(/<style([^>]*)>/i, `<style$1>${STAMP_PAGE_CSS}`);
   }
   if (/<head[\s>]/i.test(html)) {
-    return html.replace(/<head([^>]*)>/i, `<head$1><style>${STAMP_DOC_ROOT_CSS}</style>`);
+    return html.replace(/<head([^>]*)>/i, `<head$1><style>${STAMP_PAGE_CSS}</style>`);
   }
   return html;
 }
 
-function appendStampToDocumentHTML(html, stampHTML) {
+function findFirstPageInsertIndex(html) {
+  const pageRe = /<div\s+class=["'][^"']*\bpage\b[^"']*["'][^>]*>/i;
+  const start = html.search(pageRe);
+  if (start < 0) return -1;
+  const openEnd = html.indexOf('>', start) + 1;
+  const rest = html.slice(openEnd);
+  const secondMatch = rest.search(/<div\s+class=["'][^"']*\bpage\b[^"']*["']/i);
+  const segmentEnd = secondMatch >= 0 ? openEnd + secondMatch : html.search(/<\/body>/i);
+  if (segmentEnd < 0) return -1;
+  const segment = html.slice(start, segmentEnd);
+  const relativeClose = segment.lastIndexOf('</div>');
+  if (relativeClose < 0) return -1;
+  return start + relativeClose;
+}
+
+function injectStampIntoFirstPage(html, stampHTML) {
   if (!stampHTML || html.includes('stamp-overlay-block')) return html;
-  const withRoot = ensureStampDocumentRoot(html);
-  if (/<\/body>/i.test(withRoot)) return withRoot.replace(/<\/body>/i, `${stampHTML}</body>`);
-  return withRoot + stampHTML;
+  const withCss = ensureStampPageCSS(html);
+  const insertAt = findFirstPageInsertIndex(withCss);
+  if (insertAt >= 0) {
+    return withCss.slice(0, insertAt) + stampHTML + withCss.slice(insertAt);
+  }
+  if (/<\/body>/i.test(withCss)) return withCss.replace(/<\/body>/i, `${stampHTML}</body>`);
+  return withCss + stampHTML;
 }
 
 // ----------------------------------------------------------------- Helpers ---
@@ -628,11 +649,10 @@ function buildDocumentHTML(doc, company, client, settings, opts = {}) {
     @page { size: A4; margin: 0; }
     * { box-sizing: border-box; }
     html, body { margin: 0; padding: 0; }
-    html, body { position: relative; height: auto; }
-    body { font-family: ${font.body}; color: ${ink}; background: #f1f2f4; -webkit-print-color-adjust: exact; print-color-adjust: exact; font-size: 12px; line-height: 1.5; min-height: 100%; }
-    .page { width: 210mm; min-height: 297mm; margin: 0 auto; background: #fff; padding: 16mm 16mm 14mm; position: relative; }
-    .stamp-overlay-block { position: absolute !important; }
-    @media print { body { background: #fff; position: relative; } .page { box-shadow: none; margin: 0; } .stamp-overlay-block { position: absolute !important; } }
+    body { font-family: ${font.body}; color: ${ink}; background: #f1f2f4; -webkit-print-color-adjust: exact; print-color-adjust: exact; font-size: 12px; line-height: 1.5; }
+    .page { width: 210mm; min-height: 297mm; margin: 0 auto; background: #fff; padding: 16mm 16mm 14mm; position: relative; overflow: visible; }
+    .stamp-overlay-block { position: absolute !important; z-index: 10; }
+    @media print { body { background: #fff; } .page { box-shadow: none; margin: 0; position: relative !important; overflow: visible !important; } .stamp-overlay-block { position: absolute !important; } }
     h1,h2,h3,.pname,.doc-title,.band-title,.mini-title,.ele-title,.boxtitle,.cardlab,.mlab,.tlab,.plab,th { font-family: ${font.head}; }
     .fg { font-weight: 400; opacity: .72; font-size: .9em; }
     .ph { color: #b8bdc6; font-weight: 400; }
@@ -839,11 +859,11 @@ function buildDocumentHTML(doc, company, client, settings, opts = {}) {
     const tpl = (doc.type === 'acquisto' && t.customHTMLBuy && t.customHTMLBuy.trim()) ? t.customHTMLBuy : ((t.customHTML && t.customHTML.trim()) ? t.customHTML : CUSTOM_STARTER);
     const rendered = sanitizeHTML(renderTemplate(tpl, ctx));
     if (/<!doctype|<html[\s>]/i.test(rendered)) {
-      return sanitizeHTML(appendStampToDocumentHTML(rendered, stampHTML));
+      return sanitizeHTML(injectStampIntoFirstPage(rendered, stampHTML));
     }
     // body fragment -> wrap with the standard stylesheet so {{{items_table}}}/{{{totals_block}}} render styled
     const wrapped = `<!doctype html><html lang="en"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1"/><title>${esc(doc.number || meta.label)} — ${esc((company && company.name) || '')}</title><style>${css}</style></head><body class="${t.template} tpl-custom">${rendered}</body></html>`;
-    return sanitizeHTML(appendStampToDocumentHTML(wrapped, stampHTML));
+    return sanitizeHTML(injectStampIntoFirstPage(wrapped, stampHTML));
   }
 
   return sanitizeHTML(`<!doctype html><html lang="en"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1"/><title>${esc(doc.number || meta.label)} — ${esc((company && company.name) || '')}</title><style>${css}</style></head>
@@ -858,8 +878,8 @@ function buildDocumentHTML(doc, company, client, settings, opts = {}) {
       ${signatureHTML}
       ${legalHTML}
       ${footerText ? `<div class="ftext">${nl2br(footerText)}</div>` : ''}
+      ${stampHTML}
     </div>
-    ${stampHTML}
   </body></html>`);
 }
 
@@ -2254,6 +2274,7 @@ function DocPreview({ html, stampTheme, onStampMove, interactiveStamp }) {
   const dragRef = useRef(null);
   const [scale, setScale] = useState(0.6);
   const [docH, setDocH] = useState(1123);
+  const [stampBox, setStampBox] = useState({ top: 0, left: 0, w: 794, h: 1123 });
   const A4W = 794;
   const stampSrc = stampTheme && stampTheme.showStamp ? resolveStampImageSrc(stampTheme) : '';
   const showDragStamp = interactiveStamp && stampSrc;
@@ -2268,8 +2289,33 @@ function DocPreview({ html, stampTheme, onStampMove, interactiveStamp }) {
     return () => { window.removeEventListener('resize', fit); clearTimeout(id); };
   }, []);
 
+  const measureLayout = () => {
+    try {
+      const iframe = frameRef.current;
+      const doc = iframe?.contentDocument;
+      if (!iframe || !doc) return;
+      const page = doc.querySelector('.page') || doc.body;
+      setDocH(Math.max(1123, doc.body.scrollHeight + 24));
+      const w = page.offsetWidth || A4W;
+      const h = Math.round(w * (297 / 210));
+      setStampBox({
+        top: page.offsetTop || 0,
+        left: page.offsetLeft || 0,
+        w,
+        h,
+      });
+    } catch (e) { /* noop */ }
+  };
+
+  useEffect(() => {
+    const id = setTimeout(measureLayout, 80);
+    return () => clearTimeout(id);
+  }, [html, scale]);
+
   const onLoad = () => {
-    try { const d = frameRef.current.contentDocument; const h = Math.max(1123, d.body.scrollHeight + 24); setDocH(h); } catch (e) { /* noop */ }
+    measureLayout();
+    setTimeout(measureLayout, 120);
+    setTimeout(measureLayout, 400);
   };
 
   const moveStampFromEvent = (e) => {
@@ -2301,6 +2347,10 @@ function DocPreview({ html, stampTheme, onStampMove, interactiveStamp }) {
 
   const frameW = A4W * scale;
   const frameH = docH * scale;
+  const layerTop = stampBox.top * scale;
+  const layerLeft = stampBox.left * scale;
+  const layerW = stampBox.w * scale;
+  const layerH = stampBox.h * scale;
 
   return (
     <div className="preview-wrap" ref={wrapRef}>
@@ -2308,7 +2358,7 @@ function DocPreview({ html, stampTheme, onStampMove, interactiveStamp }) {
         <iframe ref={frameRef} title="Document preview" srcDoc={html} onLoad={onLoad}
           style={{ width: A4W, height: docH, border: 'none', transform: `scale(${scale})`, transformOrigin: 'top left', background: '#fff', display: 'block' }} />
         {showDragStamp && (
-          <div className="preview-stamp-layer" style={{ position: 'absolute', top: 0, left: 0, width: frameW, height: frameH, pointerEvents: 'none' }}>
+          <div className="preview-stamp-layer" style={{ position: 'absolute', top: layerTop, left: layerLeft, width: layerW, height: layerH, pointerEvents: 'none' }}>
             <img
               src={stampSrc}
               alt=""
