@@ -154,14 +154,8 @@ function getStampXY(theme) {
 }
 
 function stampPositionStyle(theme) {
-  if (theme.stampPosition === 'custom' || (theme.stampPosX != null && theme.stampPosY != null)) {
-    const { x, y } = getStampXY(theme);
-    return `left:${x}%;top:${y}%;transform:translate(-50%,-50%);`;
-  }
-  const pos = theme.stampPosition || 'bottom-right';
-  if (pos === 'bottom-left') return 'bottom:22mm;left:16mm;';
-  if (pos === 'center') return 'top:50%;left:50%;transform:translate(-50%,-50%);';
-  return 'bottom:22mm;right:16mm;';
+  const { x, y } = getStampXY(theme);
+  return `left:${x}%;top:${y}%;transform:translate(-50%,-50%);`;
 }
 
 function buildStampOverlayHTML(theme) {
@@ -171,6 +165,26 @@ function buildStampOverlayHTML(theme) {
   const posStyle = stampPositionStyle(theme);
   const opacity = theme.stampOpacity != null ? theme.stampOpacity : 0.85;
   return `<div class="stamp-overlay-block" style="position:absolute;${posStyle}z-index:10;pointer-events:none;width:55mm;print-color-adjust:exact;-webkit-print-color-adjust:exact;"><img src="${src.replace(/"/g, '')}" alt="" style="width:100%;height:auto;opacity:${opacity};mix-blend-mode:multiply;display:block;"/></div>`;
+}
+
+const STAMP_DOC_ROOT_CSS = 'html,body{position:relative;height:auto;}body{min-height:100%;}.stamp-overlay-block{position:absolute!important;}@media print{.stamp-overlay-block{position:absolute!important;}}';
+
+function ensureStampDocumentRoot(html) {
+  if (!html || html.includes('.stamp-overlay-block{position:absolute!important;')) return html;
+  if (/<style/i.test(html)) {
+    return html.replace(/<style([^>]*)>/i, `<style$1>${STAMP_DOC_ROOT_CSS}`);
+  }
+  if (/<head[\s>]/i.test(html)) {
+    return html.replace(/<head([^>]*)>/i, `<head$1><style>${STAMP_DOC_ROOT_CSS}</style>`);
+  }
+  return html;
+}
+
+function appendStampToDocumentHTML(html, stampHTML) {
+  if (!stampHTML || html.includes('stamp-overlay-block')) return html;
+  const withRoot = ensureStampDocumentRoot(html);
+  if (/<\/body>/i.test(withRoot)) return withRoot.replace(/<\/body>/i, `${stampHTML}</body>`);
+  return withRoot + stampHTML;
 }
 
 // ----------------------------------------------------------------- Helpers ---
@@ -520,7 +534,6 @@ function buildDocumentHTML(doc, company, client, settings, opts = {}) {
   const legalHTML = legalBits.length ? `<div class="legal">${legalBits.join(' · ')}</div>` : '';
   const footerText = t.footerText || (company && company.footerText) || '';
   const stampHTML = omitStamp ? '' : buildStampOverlayHTML(t);
-  const stampFixedHTML = stampHTML ? stampHTML.replace('position:absolute;', 'position:fixed;') : '';
 
   // ---- Logo ----
   const logoSrc = safeImageSrc(company && company.logo);
@@ -615,9 +628,11 @@ function buildDocumentHTML(doc, company, client, settings, opts = {}) {
     @page { size: A4; margin: 0; }
     * { box-sizing: border-box; }
     html, body { margin: 0; padding: 0; }
-    body { font-family: ${font.body}; color: ${ink}; background: #f1f2f4; -webkit-print-color-adjust: exact; print-color-adjust: exact; font-size: 12px; line-height: 1.5; }
+    html, body { position: relative; height: auto; }
+    body { font-family: ${font.body}; color: ${ink}; background: #f1f2f4; -webkit-print-color-adjust: exact; print-color-adjust: exact; font-size: 12px; line-height: 1.5; min-height: 100%; }
     .page { width: 210mm; min-height: 297mm; margin: 0 auto; background: #fff; padding: 16mm 16mm 14mm; position: relative; }
-    @media print { body { background: #fff; } .page { box-shadow: none; margin: 0; } }
+    .stamp-overlay-block { position: absolute !important; }
+    @media print { body { background: #fff; position: relative; } .page { box-shadow: none; margin: 0; } .stamp-overlay-block { position: absolute !important; } }
     h1,h2,h3,.pname,.doc-title,.band-title,.mini-title,.ele-title,.boxtitle,.cardlab,.mlab,.tlab,.plab,th { font-family: ${font.head}; }
     .fg { font-weight: 400; opacity: .72; font-size: .9em; }
     .ph { color: #b8bdc6; font-weight: 400; }
@@ -823,13 +838,12 @@ function buildDocumentHTML(doc, company, client, settings, opts = {}) {
     };
     const tpl = (doc.type === 'acquisto' && t.customHTMLBuy && t.customHTMLBuy.trim()) ? t.customHTMLBuy : ((t.customHTML && t.customHTML.trim()) ? t.customHTML : CUSTOM_STARTER);
     const rendered = sanitizeHTML(renderTemplate(tpl, ctx));
-    const appendStamp = stampFixedHTML && !rendered.includes('stamp-overlay-block') && stampHTML;
     if (/<!doctype|<html[\s>]/i.test(rendered)) {
-      if (appendStamp) return sanitizeHTML(rendered.replace('</body>', stampFixedHTML + '</body>'));
-      return sanitizeHTML(rendered);
+      return sanitizeHTML(appendStampToDocumentHTML(rendered, stampHTML));
     }
     // body fragment -> wrap with the standard stylesheet so {{{items_table}}}/{{{totals_block}}} render styled
-    return sanitizeHTML(`<!doctype html><html lang="en"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1"/><title>${esc(doc.number || meta.label)} — ${esc((company && company.name) || '')}</title><style>${css}</style></head><body class="${t.template} tpl-custom">${rendered}${appendStamp || ''}</body></html>`);
+    const wrapped = `<!doctype html><html lang="en"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1"/><title>${esc(doc.number || meta.label)} — ${esc((company && company.name) || '')}</title><style>${css}</style></head><body class="${t.template} tpl-custom">${rendered}</body></html>`;
+    return sanitizeHTML(appendStampToDocumentHTML(wrapped, stampHTML));
   }
 
   return sanitizeHTML(`<!doctype html><html lang="en"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1"/><title>${esc(doc.number || meta.label)} — ${esc((company && company.name) || '')}</title><style>${css}</style></head>
@@ -842,10 +856,10 @@ function buildDocumentHTML(doc, company, client, settings, opts = {}) {
       ${(paymentHTML || notesHTML) ? `<div class="footer">${paymentHTML || '<div></div>'}${notesHTML || '<div></div>'}</div>` : ''}
       ${fiscalHTML}
       ${signatureHTML}
-      ${stampHTML}
       ${legalHTML}
       ${footerText ? `<div class="ftext">${nl2br(footerText)}</div>` : ''}
     </div>
+    ${stampHTML}
   </body></html>`);
 }
 
