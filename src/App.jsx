@@ -83,12 +83,63 @@ const DEFAULT_THEME = {
   showPaymentBox: true,
   showNotes: true,
   showSignature: false,
+  showStamp: false,
+  stampTemplate: '',
+  stampImage: '',
+  stampPosition: 'bottom-right',
+  stampOpacity: 0.85,
   accentStyle: 'band', // band | line | soft
   customHTML: '',       // user-provided HTML for the 'custom' template (token-filled)
   customHTMLBuy: '',    // brand-styled acquisition-note (purchase invoice) template
 };
 
 const GOOGLE_FONTS = "https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600&family=Hanken+Grotesk:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&family=Public+Sans:wght@400;500;600;700&display=swap";
+
+const STAMP_PRESETS = [
+  { id: 'paid', label: 'Paid', color: '#16a34a', shape: 'circle', text: 'PAID', rot: -20 },
+  { id: 'approved', label: 'Approved', color: '#1d4ed8', shape: 'circle', text: 'APPROVED', rot: -15 },
+  { id: 'draft', label: 'Draft', color: '#dc2626', shape: 'rect', text: 'DRAFT', rot: -12 },
+  { id: 'copy', label: 'Copy', color: '#6b7280', shape: 'circle', text: 'COPY', rot: -20 },
+  { id: 'void', label: 'Void', color: '#dc2626', shape: 'rect', text: 'VOID', rot: -10 },
+  { id: 'original', label: 'Original', color: '#1e3a5f', shape: 'rect', text: 'ORIGINAL', rot: -8 },
+];
+
+function buildStampSVG({ color, shape, text, rot }) {
+  if (shape === 'circle') {
+    const compact = text.length > 5;
+    return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200"><g transform="rotate(${rot} 100 100)"><circle cx="100" cy="100" r="88" fill="none" stroke="${color}" stroke-width="7"/><circle cx="100" cy="100" r="76" fill="none" stroke="${color}" stroke-width="2.5"/><text x="100" y="${compact ? 108 : 116}" text-anchor="middle" font-family="Arial Black,Arial,sans-serif" font-size="${compact ? 24 : 44}" font-weight="900" fill="${color}" letter-spacing="3">${text}</text></g></svg>`;
+  }
+  const w = text.length > 5 ? 300 : 240;
+  const fs = text.length > 5 ? 44 : 56;
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${w} 120"><g transform="rotate(${rot} ${w / 2} 60)"><rect x="8" y="8" width="${w - 16}" height="104" rx="8" fill="none" stroke="${color}" stroke-width="6"/><rect x="16" y="16" width="${w - 32}" height="88" rx="5" fill="none" stroke="${color}" stroke-width="2"/><text x="${w / 2}" y="80" text-anchor="middle" font-family="Arial Black,Arial,sans-serif" font-size="${fs}" font-weight="900" fill="${color}" letter-spacing="4">${text}</text></g></svg>`;
+}
+
+function stampPresetToDataUrl(preset) {
+  return 'data:image/svg+xml,' + encodeURIComponent(buildStampSVG(preset));
+}
+
+function resolveStampImageSrc(theme) {
+  if (theme.stampImage) return safeImageSrc(theme.stampImage) || '';
+  if (theme.stampTemplate) {
+    const preset = STAMP_PRESETS.find((p) => p.id === theme.stampTemplate);
+    if (preset) return stampPresetToDataUrl(preset);
+  }
+  return '';
+}
+
+function buildStampOverlayHTML(theme) {
+  if (!theme.showStamp) return '';
+  const src = resolveStampImageSrc(theme);
+  if (!src) return '';
+  const pos = theme.stampPosition || 'bottom-right';
+  const posStyle = pos === 'bottom-left'
+    ? 'bottom:22mm;left:16mm;'
+    : pos === 'center'
+      ? 'top:50%;left:50%;transform:translate(-50%,-50%);'
+      : 'bottom:22mm;right:16mm;';
+  const opacity = theme.stampOpacity != null ? theme.stampOpacity : 0.85;
+  return `<div class="stamp-overlay-block" style="position:absolute;${posStyle}z-index:10;pointer-events:none;width:55mm;print-color-adjust:exact;-webkit-print-color-adjust:exact;"><img src="${src.replace(/"/g, '')}" alt="" style="width:100%;height:auto;opacity:${opacity};mix-blend-mode:multiply;display:block;"/></div>`;
+}
 
 // ----------------------------------------------------------------- Helpers ---
 const uid = () => Math.random().toString(36).slice(2, 9) + Date.now().toString(36).slice(-3);
@@ -435,6 +486,8 @@ function buildDocumentHTML(doc, company, client, settings) {
   }
   const legalHTML = legalBits.length ? `<div class="legal">${legalBits.join(' · ')}</div>` : '';
   const footerText = t.footerText || (company && company.footerText) || '';
+  const stampHTML = buildStampOverlayHTML(t);
+  const stampFixedHTML = stampHTML ? stampHTML.replace('position:absolute;', 'position:fixed;') : '';
 
   // ---- Logo ----
   const logoSrc = safeImageSrc(company && company.logo);
@@ -733,12 +786,17 @@ function buildDocumentHTML(doc, company, client, settings) {
       has_payment: !!meta.money, has_withholding: !!(totals && totals.ritenuta > 0),
       has_fund: !!(totals && totals.cassaAmount > 0), has_stamp: !!(totals && totals.bollo > 0),
       has_logo: !!(t.showLogo && logoSrc), is_goods: isGoods, has_values: showValues,
+      stamp_block: stampHTML,
     };
     const tpl = (doc.type === 'acquisto' && t.customHTMLBuy && t.customHTMLBuy.trim()) ? t.customHTMLBuy : ((t.customHTML && t.customHTML.trim()) ? t.customHTML : CUSTOM_STARTER);
     const rendered = sanitizeHTML(renderTemplate(tpl, ctx));
-    if (/<!doctype|<html[\s>]/i.test(rendered)) return sanitizeHTML(rendered);
+    const appendStamp = stampFixedHTML && !rendered.includes('stamp-overlay-block') && stampHTML;
+    if (/<!doctype|<html[\s>]/i.test(rendered)) {
+      if (appendStamp) return sanitizeHTML(rendered.replace('</body>', stampFixedHTML + '</body>'));
+      return sanitizeHTML(rendered);
+    }
     // body fragment -> wrap with the standard stylesheet so {{{items_table}}}/{{{totals_block}}} render styled
-    return sanitizeHTML(`<!doctype html><html lang="en"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1"/><title>${esc(doc.number || meta.label)} — ${esc((company && company.name) || '')}</title><style>${css}</style></head><body class="${t.template} tpl-custom">${rendered}</body></html>`);
+    return sanitizeHTML(`<!doctype html><html lang="en"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1"/><title>${esc(doc.number || meta.label)} — ${esc((company && company.name) || '')}</title><style>${css}</style></head><body class="${t.template} tpl-custom">${rendered}${appendStamp || ''}</body></html>`);
   }
 
   return sanitizeHTML(`<!doctype html><html lang="en"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1"/><title>${esc(doc.number || meta.label)} — ${esc((company && company.name) || '')}</title><style>${css}</style></head>
@@ -751,6 +809,7 @@ function buildDocumentHTML(doc, company, client, settings) {
       ${(paymentHTML || notesHTML) ? `<div class="footer">${paymentHTML || '<div></div>'}${notesHTML || '<div></div>'}</div>` : ''}
       ${fiscalHTML}
       ${signatureHTML}
+      ${stampHTML}
       ${legalHTML}
       ${footerText ? `<div class="ftext">${nl2br(footerText)}</div>` : ''}
     </div>
@@ -2450,6 +2509,17 @@ function ThemeEditor({ value, onChange }) {
     try { const txt = sanitizeHTML(await f.text()); set({ customHTML: txt, template: 'custom' }); } catch (err) { /* noop */ }
     e.target.value = '';
   };
+  const onUploadStamp = async (e) => {
+    const f = e.target.files && e.target.files[0]; if (!f) return;
+    const err = validateUploadFile(f, { mimes: ['image/jpeg', 'image/png', 'image/webp', 'image/gif', 'image/svg+xml'] });
+    if (err) return;
+    try {
+      const url = await fileToScaledDataURL(f, 360);
+      const safe = safeImageSrc(url) || url;
+      set({ stampImage: safe, stampTemplate: '' });
+    } catch (err) { /* noop */ }
+    e.target.value = '';
+  };
   return (
     <div className="theme-editor">
       <Field label="Template" full><Segmented value={value.template} onChange={(v) => set({ template: v })} options={TEMPLATE_ORDER.map((t) => ({ value: t, label: TEMPLATES[t].label }))} /></Field>
@@ -2463,7 +2533,51 @@ function ThemeEditor({ value, onChange }) {
         <Toggle checked={value.showPaymentBox} onChange={(v) => set({ showPaymentBox: v })} label="Payment box" />
         <Toggle checked={value.showNotes} onChange={(v) => set({ showNotes: v })} label="Footer notes" />
         <Toggle checked={value.showSignature} onChange={(v) => set({ showSignature: v })} label="Signature space" />
+        <Toggle checked={!!value.showStamp} onChange={(v) => set({ showStamp: v })} label="Stamp overlay" />
       </div>
+
+      {value.showStamp && (
+        <div className="stamp-editor full">
+          <div className="stamp-editor-label">Pre-made stamps</div>
+          <div className="stamp-preset-grid">
+            <button type="button" className={cx('stamp-preset-btn', !value.stampImage && !value.stampTemplate && 'on')} onClick={() => set({ stampTemplate: '', stampImage: '' })}>
+              <span className="stamp-none">—</span>
+              <span className="stamp-preset-name">None</span>
+            </button>
+            {STAMP_PRESETS.map((preset) => (
+              <button key={preset.id} type="button" className={cx('stamp-preset-btn', !value.stampImage && value.stampTemplate === preset.id && 'on')} onClick={() => set({ stampTemplate: preset.id, stampImage: '' })}>
+                <img src={stampPresetToDataUrl(preset)} alt={preset.label} />
+                <span className="stamp-preset-name">{preset.label}</span>
+              </button>
+            ))}
+          </div>
+          <div className="stamp-upload-row">
+            <label className="btn btn-subtle btn-sm filebtn">
+              <Upload size={13} />
+              <span>Upload custom stamp</span>
+              <input type="file" accept="image/*" onChange={onUploadStamp} hidden />
+            </label>
+            {value.stampImage && (
+              <>
+                <img src={value.stampImage} className="stamp-custom-preview" alt="custom stamp" />
+                <Btn variant="ghost" size="sm" icon={Trash2} onClick={() => set({ stampImage: '', stampTemplate: '' })}>Remove</Btn>
+              </>
+            )}
+            <span className="hint">PNG with transparency recommended</span>
+          </div>
+          <div className="stamp-controls">
+            <Field label="Position">
+              <Segmented value={value.stampPosition || 'bottom-right'} onChange={(v) => set({ stampPosition: v })} options={[{ value: 'bottom-right', label: 'Bottom right' }, { value: 'bottom-left', label: 'Bottom left' }, { value: 'center', label: 'Center' }]} />
+            </Field>
+            <Field label="Opacity">
+              <div className="stamp-opacity-row">
+                <input type="range" min="0.2" max="1" step="0.05" value={value.stampOpacity != null ? value.stampOpacity : 0.85} onChange={(e) => set({ stampOpacity: parseFloat(e.target.value) })} />
+                <span className="mono stamp-opacity-val">{Math.round((value.stampOpacity != null ? value.stampOpacity : 0.85) * 100)}%</span>
+              </div>
+            </Field>
+          </div>
+        </div>
+      )}
 
       {value.template === 'custom' && (
         <div className="custom-tpl full">
@@ -2529,6 +2643,7 @@ function ThemeEditor({ value, onChange }) {
                   <li><code>{'{{{items_table}}}'}</code> · <code>{'{{{totals_block}}}'}</code></li>
                   <li><code>{'{{{company_block}}}'}</code> · <code>{'{{{client_block}}}'}</code></li>
                   <li><code>{'{{{logo}}}'}</code> · <code>{'{{{payment_block}}}'}</code> · <code>{'{{{notes_block}}}'}</code></li>
+                  <li><code>{'{{{stamp_block}}}'}</code> <span className="td">stamp overlay (when enabled)</span></li>
                   <li className="td">triple braces = raw HTML, not escaped</li>
                 </ul>
               </div>
@@ -3586,6 +3701,22 @@ const APP_CSS = `
 .token-ref .td{color:var(--ink-4);}
 .toggle-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:13px;padding-top:4px;}
 .toggle-grid.full{grid-column:1/-1;}
+.stamp-editor{grid-column:1/-1;display:flex;flex-direction:column;gap:12px;border-top:1px solid var(--line);padding-top:14px;margin-top:2px;}
+.stamp-editor-label{font-size:11px;font-weight:600;color:var(--ink-3);text-transform:uppercase;letter-spacing:.1em;}
+.stamp-preset-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;}
+.stamp-preset-btn{background:var(--bg-2);border:1.5px solid var(--line);border-radius:var(--radius-sm);padding:8px 6px 6px;display:flex;flex-direction:column;align-items:center;gap:5px;cursor:pointer;transition:border-color .15s,background .15s;}
+.stamp-preset-btn:hover{border-color:var(--line-2);background:var(--bg-4);}
+.stamp-preset-btn.on{border-color:var(--gold);background:var(--gold-soft);}
+.stamp-preset-btn img{width:44px;height:44px;object-fit:contain;}
+.stamp-none{width:44px;height:44px;display:grid;place-items:center;font-size:20px;color:var(--ink-4);}
+.stamp-preset-name{font-size:10px;color:var(--ink-3);white-space:nowrap;}
+.stamp-preset-btn.on .stamp-preset-name{color:var(--gold-2);}
+.stamp-upload-row{display:flex;flex-wrap:wrap;align-items:center;gap:10px;}
+.stamp-custom-preview{height:48px;width:auto;max-width:80px;object-fit:contain;border-radius:6px;border:1px solid var(--line);background:#fff;padding:4px;}
+.stamp-controls{display:flex;flex-direction:column;gap:12px;}
+.stamp-opacity-row{display:flex;align-items:center;gap:10px;}
+.stamp-opacity-row input[type=range]{flex:1;accent-color:var(--gold);}
+.stamp-opacity-val{min-width:36px;text-align:right;font-size:12px;color:var(--ink-2);}
 
 /* ---------- settings ---------- */
 .data-actions{display:flex;gap:10px;flex-wrap:wrap;}
