@@ -146,17 +146,27 @@ function stampPresetXY(position) {
   return { x: 84, y: 88 };
 }
 
+const STAMP_H_MM = 36;
+const STAMP_A4_H_MM = 297;
+const STAMP_A4_W_MM = 210;
+const STAMP_MAX_Y = Math.round(((STAMP_A4_H_MM - STAMP_H_MM / 2 - 4) / STAMP_A4_H_MM) * 1000) / 10;
+
 function getStampXY(theme) {
+  let x;
+  let y;
   if (theme.stampPosX != null && theme.stampPosY != null) {
-    return { x: clamp(num(theme.stampPosX), 0, 100), y: clamp(num(theme.stampPosY), 0, 100) };
+    x = clamp(num(theme.stampPosX), 0, 100);
+    y = clamp(num(theme.stampPosY), 0, 100);
+  } else {
+    ({ x, y } = stampPresetXY(theme.stampPosition || 'bottom-right'));
   }
-  return stampPresetXY(theme.stampPosition || 'bottom-right');
+  return { x: clamp(x, 3, 97), y: clamp(y, 3, STAMP_MAX_Y) };
 }
 
 function stampPositionStyle(theme) {
   const { x, y } = getStampXY(theme);
-  const leftMm = Math.round((x / 100) * 2100) / 10;
-  const topMm = Math.round((y / 100) * 2970) / 10;
+  const leftMm = Math.round((x / 100) * STAMP_A4_W_MM * 10) / 10;
+  const topMm = Math.round((y / 100) * STAMP_A4_H_MM * 10) / 10;
   return `left:${leftMm}mm;top:${topMm}mm;transform:translate(-50%,-50%);`;
 }
 
@@ -166,13 +176,14 @@ function buildStampOverlayHTML(theme) {
   if (!src) return '';
   const posStyle = stampPositionStyle(theme);
   const opacity = theme.stampOpacity != null ? theme.stampOpacity : 0.85;
-  return `<div class="stamp-overlay-block" style="position:absolute;${posStyle}z-index:10;pointer-events:none;width:55mm;print-color-adjust:exact;-webkit-print-color-adjust:exact;"><img src="${src.replace(/"/g, '')}" alt="" style="width:100%;height:auto;opacity:${opacity};mix-blend-mode:multiply;display:block;"/></div>`;
+  const img = `<img src="${src.replace(/"/g, '')}" alt="" style="width:100%;height:auto;opacity:${opacity};mix-blend-mode:multiply;display:block;"/>`;
+  return `<div class="stamp-anchor"><div class="stamp-overlay-block" style="position:absolute;${posStyle}pointer-events:none;width:55mm;print-color-adjust:exact;-webkit-print-color-adjust:exact;">${img}</div></div>`;
 }
 
-const STAMP_PAGE_CSS = '.page{position:relative!important;overflow:visible!important;}.stamp-overlay-block{position:absolute!important;z-index:10;}@media print{.page{position:relative!important;overflow:visible!important;}.stamp-overlay-block{position:absolute!important;print-color-adjust:exact;-webkit-print-color-adjust:exact;}}';
+const STAMP_PAGE_CSS = '.page{position:relative!important;overflow:visible!important;}.stamp-anchor{position:absolute;top:0;left:0;width:100%;height:297mm;max-height:297mm;pointer-events:none;z-index:10;overflow:visible;}.stamp-overlay-block{position:absolute!important;z-index:11;break-inside:avoid;page-break-inside:avoid;-webkit-column-break-inside:avoid;}@media print{.page{position:relative!important;overflow:visible!important;}.stamp-anchor{height:297mm;max-height:297mm;break-inside:avoid;page-break-inside:avoid;}.stamp-overlay-block{position:absolute!important;break-inside:avoid;page-break-inside:avoid;print-color-adjust:exact;-webkit-print-color-adjust:exact;}}';
 
 function ensureStampPageCSS(html) {
-  if (!html || html.includes('.stamp-overlay-block{position:absolute!important;z-index:10;}')) return html;
+  if (!html || html.includes('.stamp-anchor{position:absolute;top:0;left:0;width:100%;height:297mm')) return html;
   if (/<style/i.test(html)) {
     return html.replace(/<style([^>]*)>/i, `<style$1>${STAMP_PAGE_CSS}`);
   }
@@ -198,8 +209,14 @@ function findFirstPageInsertIndex(html) {
 }
 
 function injectStampIntoFirstPage(html, stampHTML) {
-  if (!stampHTML || html.includes('stamp-overlay-block')) return html;
+  if (!stampHTML || html.includes('stamp-anchor')) return html;
   const withCss = ensureStampPageCSS(html);
+  const pageRe = /<div\s+class=["'][^"']*\bpage\b[^"']*["'][^>]*>/i;
+  const start = withCss.search(pageRe);
+  if (start >= 0) {
+    const openEnd = withCss.indexOf('>', start) + 1;
+    return withCss.slice(0, openEnd) + stampHTML + withCss.slice(openEnd);
+  }
   const insertAt = findFirstPageInsertIndex(withCss);
   if (insertAt >= 0) {
     return withCss.slice(0, insertAt) + stampHTML + withCss.slice(insertAt);
@@ -651,8 +668,9 @@ function buildDocumentHTML(doc, company, client, settings, opts = {}) {
     html, body { margin: 0; padding: 0; }
     body { font-family: ${font.body}; color: ${ink}; background: #f1f2f4; -webkit-print-color-adjust: exact; print-color-adjust: exact; font-size: 12px; line-height: 1.5; }
     .page { width: 210mm; min-height: 297mm; margin: 0 auto; background: #fff; padding: 16mm 16mm 14mm; position: relative; overflow: visible; }
-    .stamp-overlay-block { position: absolute !important; z-index: 10; }
-    @media print { body { background: #fff; } .page { box-shadow: none; margin: 0; position: relative !important; overflow: visible !important; } .stamp-overlay-block { position: absolute !important; } }
+    .stamp-anchor { position: absolute; top: 0; left: 0; width: 100%; height: 297mm; max-height: 297mm; pointer-events: none; z-index: 10; overflow: visible; }
+    .stamp-overlay-block { position: absolute !important; z-index: 11; break-inside: avoid; page-break-inside: avoid; }
+    @media print { body { background: #fff; } .page { box-shadow: none; margin: 0; position: relative !important; overflow: visible !important; } .stamp-anchor { height: 297mm; max-height: 297mm; break-inside: avoid; page-break-inside: avoid; } .stamp-overlay-block { position: absolute !important; break-inside: avoid; page-break-inside: avoid; } }
     h1,h2,h3,.pname,.doc-title,.band-title,.mini-title,.ele-title,.boxtitle,.cardlab,.mlab,.tlab,.plab,th { font-family: ${font.head}; }
     .fg { font-weight: 400; opacity: .72; font-size: .9em; }
     .ph { color: #b8bdc6; font-weight: 400; }
@@ -869,6 +887,7 @@ function buildDocumentHTML(doc, company, client, settings, opts = {}) {
   return sanitizeHTML(`<!doctype html><html lang="en"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1"/><title>${esc(doc.number || meta.label)} — ${esc((company && company.name) || '')}</title><style>${css}</style></head>
   <body class="${t.template}">
     <div class="page tpl-${t.template}">
+      ${stampHTML}
       ${header}
       <table class="items"><thead><tr>${head.join('')}</tr></thead><tbody>${body}${emptyRows}</tbody></table>
       ${transportHTML}
@@ -2325,7 +2344,7 @@ function DocPreview({ html, stampTheme, onStampMove, interactiveStamp }) {
     const rect = layer.getBoundingClientRect();
     if (!rect.width || !rect.height) return;
     const x = clamp(((e.clientX - rect.left) / rect.width) * 100, 3, 97);
-    const y = clamp(((e.clientY - rect.top) / rect.height) * 100, 3, 97);
+    const y = clamp(((e.clientY - rect.top) / rect.height) * 100, 3, STAMP_MAX_Y);
     onStampMove({ stampPosition: 'custom', stampPosX: Math.round(x * 10) / 10, stampPosY: Math.round(y * 10) / 10 });
   };
 
