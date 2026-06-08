@@ -16,6 +16,7 @@ import {
    ============================================================================ */
 
 const STORE_KEY = 'fg_store_v7';
+const DOC_CLEAR_VERSION = 1;
 
 // ---------------------------------------------------------------- Doc types ---
 const DOC_TYPES = {
@@ -1650,156 +1651,7 @@ function seedStore() {
     { id: uid(), desc: 'Patek Philippe Aquanaut', um: 'pcs', price: 0, iva: 0 },
     { id: uid(), desc: 'Omega Speedmaster Moonwatch', um: 'pcs', price: 0, iva: 0 },
   ];
-  const L = (desc, qty, price, note) => ({ id: uid(), desc, qty: qty == null ? 1 : qty, um: 'pcs', price: price || 0, iva: 0, discount: 0, note: note || '' });
-  const D = (over) => ({
-    id: uid(), type: 'fattura', status: 'emessa',
-    validUntil: '', refDoc: '', subject: '', contactPerson: '',
-    number: '', seq: 1, year: 2026,
-    lines: [], notes: '', causaleFiscale: '',
-    cassa: { enabled: false, rate: 4, iva: 22 },
-    ritenuta: { enabled: false, rate: 20, base: 'imponibile' },
-    bollo: { enabled: false, amount: 2 },
-    payment: { method: 'Bank transfer', iban: '', terms: '' },
-    transport: { causale: '', aspetto: '', colli: '', peso: '', vettore: '', porto: '', date: '', time: '', annotazioni: '' },
-    themeOverride: {}, createdAt: Date.now(),
-    ...over,
-  });
-  const documents = [
-    D({ companyId: c1, clientId: cl1, currency: 'EUR', number: 'INV-1050', seq: 1050,
-        date: '2026-04-27', dueDate: '2026-05-04', contactPerson: 'Vilmos Horvath',
-        subject: 'OMEGA SPEEDMASTER MOONWATCH | PORTUGIESER AUTOMATIC CHRONOGRAPH',
-        causaleFiscale: 'Margin scheme is adopted in this invoice',
-        lines: [ L('Deposit | TBC', 1, 4850), L('Portugieser Automatic Chronograph | Ref IW371605 | SNR 6225017', 1, 4800) ] }),
-    D({ companyId: c2, clientId: cl2, currency: 'EUR', number: 'INV-00010', seq: 10,
-        date: '2026-06-04', dueDate: '2026-06-11', contactPerson: 'Purosangue Motors LLC',
-        subject: 'Rolex YM | Daytona | YM | Cartier',
-        causaleFiscale: 'Margin scheme is adopted in this invoice',
-        lines: [
-          L('Rolex Yacht Master | SNR P6293340', 1, 22000, 'Condition: USED'),
-          L('Rolex Daytona | SNR 081T82Y2', 1, 70000, 'Condition: USED'),
-          L('Rolex Yacht Master | SNR 0G7F2690', 1, 14000, 'Condition: USED'),
-          L('Cartier Panthère | Ref WSPN0013', 1, 3000, 'Condition: USED'),
-        ] }),
-    D({ companyId: c3, clientId: cl3, currency: 'EUR', number: '0016/2026', seq: 16,
-        date: '2026-06-05', dueDate: '2026-06-12',
-        causaleFiscale: 'Margin scheme - Second-hand goods. Article 313 of Council Directive 2006/112/EC and Decree-Law 199/96 of 18 October. VAT not separately chargeable.',
-        lines: [ L('Cartier Panthère', 1, 5170, 'Ref WSPN0015 | SNR 4016100496GY1') ] }),
-    D({ companyId: c4, clientId: cl4, currency: 'GBP', number: 'INV-0037/2026', seq: 37,
-        date: '2026-05-21', dueDate: '2026-05-28', contactPerson: 'Purosangue Watches LTD',
-        causaleFiscale: 'Margin scheme is adopted in this invoice',
-        lines: [ L('Patek Philippe Aquanaut | Ref 5167A-001 | SNR 7298801/6387045', 1, 55000) ] }),
-
-    // --- Other document formats (one example of each), each rendered in its company's own graphics ---
-    D({ companyId: c1, clientId: cl1, type: 'proforma', currency: 'EUR', number: 'PRO-1051', seq: 1051,
-        date: '2026-05-02', dueDate: '2026-05-09', contactPerson: 'Vilmos Horvath',
-        subject: 'AUDEMARS PIGUET ROYAL OAK | PROPOSAL',
-        causaleFiscale: 'Margin scheme is adopted in this invoice',
-        lines: [ L('Audemars Piguet Royal Oak | Ref 15500ST | SNR M01234', 1, 38500, 'Condition: USED') ] }),
-    D({ companyId: c1, clientId: cl1, type: 'ricevuta', currency: 'EUR', number: 'REC-1052', seq: 1052,
-        date: '2026-05-05', contactPerson: 'Vilmos Horvath',
-        causaleFiscale: 'Margin scheme is adopted in this invoice',
-        lines: [ L('Deposit received | OMEGA Speedmaster Moonwatch', 1, 4850) ] }),
-    D({ companyId: c2, clientId: cl2, type: 'ddt', currency: 'EUR', number: 'DN-0007', seq: 7,
-        date: '2026-06-06',
-        transport: { causale: 'Sale', aspetto: 'Watch boxes', colli: '4', peso: '2 kg', vettore: 'Insured courier', porto: 'Prepaid', date: '2026-06-06', time: '14:30', annotazioni: 'Insured shipment - handle with care. Signature required on delivery.' },
-        lines: [
-          L('Rolex Yacht Master | SNR P6293340', 1, 0, 'Condition: USED'),
-          L('Rolex Daytona | SNR 081T82Y2', 1, 0, 'Condition: USED'),
-          L('Cartier Panthère | Ref WSPN0013', 1, 0, 'Condition: USED'),
-        ] }),
-    D({ companyId: c3, clientId: cl3, type: 'nota_credito', currency: 'EUR', number: 'CN-0017/2026', seq: 17,
-        date: '2026-06-06', refDoc: 'Invoice 0016/2026',
-        causaleFiscale: 'Margin scheme - Second-hand goods. Article 313 of Council Directive 2006/112/EC and Decree-Law 199/96 of 18 October. VAT not separately chargeable.',
-        lines: [ L('Cartier Panthère', 1, 5170, 'Ref WSPN0015 | SNR 4016100496GY1 - credit for returned item') ] }),
-    D({ companyId: c4, clientId: cl4, type: 'preventivo', currency: 'GBP', number: 'QT-0038/2026', seq: 38,
-        date: '2026-05-21', validUntil: '2026-06-21', contactPerson: 'Purosangue Watches LTD',
-        causaleFiscale: 'Margin scheme is adopted in this invoice',
-        lines: [ L('Patek Philippe Aquanaut | Ref 5167A-001 | SNR 7298801/6387045', 1, 55000) ] }),
-
-    // ===== Additional documents: varied watches, currencies (EUR/GBP/USD/CHF/AED) and every format =====
-    // --- Estival Habitual ---
-    D({ companyId: c1, clientId: cl1, currency: 'EUR', number: 'INV-1053', seq: 1053, date: '2026-04-12', dueDate: '2026-04-19', contactPerson: 'Vilmos Horvath', causaleFiscale: 'Margin scheme is adopted in this invoice',
-        lines: [ L('Rolex Submariner Date | Ref 126610LN | SNR 7K842109', 1, 12800, 'Condition: USED'), L('Tudor Black Bay 58 | Ref 79030N | SNR K7781200', 1, 2950, 'Condition: USED') ] }),
-    D({ companyId: c1, clientId: cl1, currency: 'EUR', number: 'INV-1054', seq: 1054, date: '2026-04-20', dueDate: '2026-04-27', causaleFiscale: 'Margin scheme is adopted in this invoice',
-        lines: [ L('Patek Philippe Nautilus | Ref 5711/1A | SNR 6201882', 1, 135000, 'Condition: USED') ] }),
-    D({ companyId: c1, clientId: cl1, currency: 'EUR', number: 'INV-1055', seq: 1055, date: '2026-05-08', dueDate: '2026-05-15', causaleFiscale: 'Margin scheme is adopted in this invoice',
-        lines: [ L('Omega Seamaster 300 | Ref 210.30.42 | SNR 55009911', 1, 5200), L('Breitling Navitimer B01 | Ref AB0138 | SNR 8812345', 1, 8999) ] }),
-    D({ companyId: c1, clientId: cl1, currency: 'EUR', number: 'INV-1056', seq: 1056, date: '2026-05-18', dueDate: '2026-05-25', subject: 'COLLECTION PURCHASE | 6 PIECES', causaleFiscale: 'Margin scheme is adopted in this invoice',
-        lines: [ L('Rolex GMT-Master II | Ref 126710BLRO | SNR 8H551020', 1, 19500, 'Condition: USED'), L('Omega Speedmaster Moonwatch | Ref 310.30.42 | SNR 99887766', 1, 6800, 'Condition: USED'), L('Cartier Santos | Ref WSSA0018 | SNR PT4490', 1, 7250, 'Condition: USED'), L('Tudor Black Bay 58 | Ref 79030N | SNR K7781201', 1, 2950, 'Condition: USED'), L('Grand Seiko Snowflake | Ref SBGA211 | SNR 5511002', 1, 4200, 'Condition: USED'), L('Zenith El Primero | Ref 03.2040 | SNR 19887700', 1, 6900, 'Condition: USED') ] }),
-    D({ companyId: c1, clientId: cl1, currency: 'CHF', number: 'INV-1057', seq: 1057, date: '2026-05-26', dueDate: '2026-06-02', causaleFiscale: 'Margin scheme is adopted in this invoice',
-        lines: [ L('A. Lange & Söhne Lange 1 | Ref 191.032 | SNR 220011', 1, 48900, 'Condition: USED') ] }),
-    D({ companyId: c1, clientId: cl1, type: 'proforma', currency: 'EUR', number: 'PRO-1058', seq: 1058, date: '2026-05-29', dueDate: '2026-06-05', subject: 'OFFER | AUDEMARS PIGUET ROYAL OAK', causaleFiscale: 'Margin scheme is adopted in this invoice',
-        lines: [ L('Audemars Piguet Royal Oak | Ref 15500ST | SNR M01234', 1, 38500, 'Condition: USED') ] }),
-    D({ companyId: c1, clientId: cl1, type: 'ricevuta', currency: 'EUR', number: 'REC-1059', seq: 1059, date: '2026-05-30', causaleFiscale: 'Margin scheme is adopted in this invoice',
-        lines: [ L('Deposit received | Patek Philippe Aquanaut', 1, 10000) ] }),
-    D({ companyId: c1, clientId: cl1, type: 'nota_credito', currency: 'EUR', number: 'CN-1060', seq: 1060, date: '2026-06-01', refDoc: 'Invoice INV-1053', causaleFiscale: 'Margin scheme is adopted in this invoice',
-        lines: [ L('Rolex Submariner Date | Ref 126610LN - return credit', 1, 12800) ] }),
-    // --- Purosangue Motors ---
-    D({ companyId: c2, clientId: cl2, currency: 'EUR', number: 'INV-00011', seq: 11, date: '2026-06-06', dueDate: '2026-06-13', contactPerson: 'Purosangue Motors LLC', subject: 'Rolex Daytona | GMT-Master II', causaleFiscale: 'Margin scheme is adopted in this invoice',
-        lines: [ L('Rolex Daytona | Ref 116500LN | SNR 9R223344', 1, 38500, 'Condition: USED'), L('Rolex GMT-Master II | Ref 126710BLRO | SNR 8H551020', 1, 19500, 'Condition: USED') ] }),
-    D({ companyId: c2, clientId: cl2, currency: 'AED', number: 'INV-00012', seq: 12, date: '2026-05-22', dueDate: '2026-05-29', contactPerson: 'Purosangue Motors LLC', causaleFiscale: 'Margin scheme is adopted in this invoice',
-        lines: [ L('Richard Mille RM 011 | Ref RM011 | SNR 556677', 1, 250000, 'Condition: USED') ] }),
-    D({ companyId: c2, clientId: cl2, currency: 'USD', number: 'INV-00013', seq: 13, date: '2026-05-15', dueDate: '2026-05-22', contactPerson: 'Purosangue Motors LLC', causaleFiscale: 'Margin scheme is adopted in this invoice',
-        lines: [ L('Audemars Piguet Royal Oak | Ref 15500ST | SNR M01235', 1, 42000, 'Condition: USED'), L('Omega Speedmaster Moonwatch | Ref 310.30.42 | SNR 99887767', 1, 6800, 'Condition: USED') ] }),
-    D({ companyId: c2, clientId: cl2, currency: 'EUR', number: 'INV-00014', seq: 14, date: '2026-05-02', dueDate: '2026-05-09', contactPerson: 'Purosangue Motors LLC', subject: 'GRAND COMPLICATIONS', causaleFiscale: 'Margin scheme is adopted in this invoice',
-        lines: [ L('Patek Philippe Grandmaster Chime | Ref 6300A | SNR 0000001', 1, 1250000, 'Unique piece'), L('Richard Mille RM 056 | Ref RM056 | SNR 000045', 1, 880000, 'Condition: USED') ] }),
-    D({ companyId: c2, clientId: cl2, currency: 'AED', number: 'INV-00015', seq: 15, date: '2026-04-28', dueDate: '2026-05-05', contactPerson: 'Purosangue Motors LLC', causaleFiscale: 'Margin scheme is adopted in this invoice',
-        lines: [ L('Audemars Piguet Royal Oak Offshore | Ref 26470ST | SNR J55667', 1, 68000, 'Condition: USED'), L('Hublot Big Bang | Ref 301.SB | SNR 1209887', 1, 21000, 'Condition: USED'), L('Panerai Luminor Marina | Ref PAM01312 | SNR BB998812', 1, 9500, 'Condition: USED') ] }),
-    D({ companyId: c2, clientId: cl2, type: 'proforma', currency: 'EUR', number: 'PRO-00018', seq: 18, date: '2026-06-02', dueDate: '2026-06-09', contactPerson: 'Purosangue Motors LLC', subject: 'OFFER | ROLEX DAYTONA', causaleFiscale: 'Margin scheme is adopted in this invoice',
-        lines: [ L('Rolex Daytona | Ref 116500LN | SNR 9R223345', 1, 39000, 'Condition: USED') ] }),
-    D({ companyId: c2, clientId: cl2, type: 'ddt', currency: 'EUR', number: 'DN-0008', seq: 8, date: '2026-06-06',
-        transport: { causale: 'Sale', aspetto: 'Watch boxes', colli: '3', peso: '1.8 kg', vettore: 'FedEx Priority', porto: 'Prepaid', date: '2026-06-06', time: '10:15', annotazioni: 'Fragile - fully insured. Signature required.' },
-        lines: [ L('Rolex Daytona | SNR 9R223344', 1, 0, 'Condition: USED'), L('Rolex GMT-Master II | SNR 8H551020', 1, 0, 'Condition: USED'), L('Cartier Santos | SNR PT4490', 1, 0, 'Condition: USED') ] }),
-    D({ companyId: c2, clientId: cl2, type: 'preventivo', currency: 'EUR', number: 'QT-00019', seq: 19, date: '2026-05-20', validUntil: '2026-07-31', contactPerson: 'Purosangue Motors LLC', causaleFiscale: 'Margin scheme is adopted in this invoice',
-        lines: [ L('Patek Philippe Nautilus | Ref 5711/1A | SNR 6201883', 1, 140000, 'Condition: USED') ] }),
-    // --- Almas Elitistas ---
-    D({ companyId: c3, clientId: cl3, currency: 'EUR', number: '0021/2026', seq: 21, date: '2026-06-06', dueDate: '2026-06-13', causaleFiscale: 'Margin scheme - Second-hand goods. Article 313 of Council Directive 2006/112/EC and Decree-Law 199/96 of 18 October. VAT not separately chargeable.',
-        lines: [ L('Cartier Santos | Ref WSSA0018', 2, 7250, 'Condition: NEW') ] }),
-    D({ companyId: c3, clientId: cl3, currency: 'EUR', number: '0022/2026', seq: 22, date: '2026-05-25', dueDate: '2026-06-01', causaleFiscale: 'Margin scheme - Second-hand goods. Article 313 of Council Directive 2006/112/EC and Decree-Law 199/96 of 18 October. VAT not separately chargeable.',
-        lines: [ L('Vacheron Constantin Overseas | Ref 4500V | SNR BX12345', 1, 28000, 'Condition: USED') ] }),
-    D({ companyId: c3, clientId: cl3, currency: 'EUR', number: '0023/2026', seq: 23, date: '2026-05-12', dueDate: '2026-05-19', causaleFiscale: 'Margin scheme - Second-hand goods. Article 313 of Council Directive 2006/112/EC and Decree-Law 199/96 of 18 October. VAT not separately chargeable.',
-        lines: [ L('Cartier Panthère « édition spéciale »', 1, 5170, 'Réf WSPN0019 | SNR 4016100777') ] }),
-    D({ companyId: c3, clientId: cl3, currency: 'EUR', number: '0024/2026', seq: 24, date: '2026-04-30', dueDate: '2026-05-07', causaleFiscale: 'Margin scheme - Second-hand goods. Article 313 of Council Directive 2006/112/EC and Decree-Law 199/96 of 18 October. VAT not separately chargeable.',
-        lines: [ L('Patek Philippe Calatrava | Ref 5227G | SNR 6011223', 1, 3100, 'Condition: USED') ] }),
-    D({ companyId: c3, clientId: cl3, type: 'nota_credito', currency: 'EUR', number: 'CN-0025/2026', seq: 25, date: '2026-06-07', refDoc: 'Invoice 0021/2026', causaleFiscale: 'Margin scheme - Second-hand goods. Article 313 of Council Directive 2006/112/EC and Decree-Law 199/96 of 18 October. VAT not separately chargeable.',
-        lines: [ L('Cartier Santos | Ref WSSA0018 - return credit', 1, 7250) ] }),
-    // --- Purosangue Watches ---
-    D({ companyId: c4, clientId: cl4, currency: 'GBP', number: 'INV-0044/2026', seq: 44, date: '2026-05-24', dueDate: '2026-05-31', contactPerson: 'Purosangue Watches LTD', causaleFiscale: 'Margin scheme is adopted in this invoice',
-        lines: [ L('Rolex Day-Date 40 | Ref 228238 | SNR 3344117', 1, 41000, 'Condition: USED'), L('Jaeger-LeCoultre Reverso | Ref Q397842 | SNR 3990221', 1, 9800, 'Condition: USED') ] }),
-    D({ companyId: c4, clientId: cl4, currency: 'GBP', number: 'INV-0045/2026', seq: 45, date: '2026-05-10', dueDate: '2026-05-17', contactPerson: 'Purosangue Watches LTD', causaleFiscale: 'Margin scheme is adopted in this invoice',
-        lines: [ L('Grand Seiko Snowflake | Ref SBGA211 | SNR 5511003', 2, 4200, 'Condition: USED'), L('Zenith El Primero | Ref 03.2040 | SNR 19887701', 1, 6900, 'Condition: USED') ] }),
-    D({ companyId: c4, clientId: cl4, type: 'ricevuta', currency: 'GBP', number: 'REC-0046/2026', seq: 46, date: '2026-05-28', contactPerson: 'Purosangue Watches LTD', causaleFiscale: 'Margin scheme is adopted in this invoice',
-        lines: [ L('Balance received | Patek Philippe Aquanaut', 1, 15000) ] }),
-    D({ companyId: c4, clientId: cl4, type: 'ddt', currency: 'GBP', number: 'DN-0047/2026', seq: 47, date: '2026-06-06',
-        transport: { causale: 'Repair return', aspetto: 'Padded envelope', colli: '1', peso: '0.4 kg', vettore: 'Royal Mail Special Delivery', porto: 'Carriage paid', date: '2026-06-06', time: '', annotazioni: 'Tracked and insured.' },
-        lines: [ L('Omega Speedmaster Moonwatch | SNR 99887766', 1, 0, 'Condition: USED') ] }),
-    D({ companyId: c4, clientId: cl4, type: 'preventivo', currency: 'GBP', number: 'QT-0048/2026', seq: 48, date: '2026-05-19', validUntil: '2026-07-15', contactPerson: 'Purosangue Watches LTD', causaleFiscale: 'Margin scheme is adopted in this invoice',
-        lines: [ L('Rolex Daytona | Ref 116500LN | SNR 9R223399', 1, 29500, 'Condition: USED') ] }),
-
-    // ===== Acquisition notes (purchase invoices) — buying watches from private sellers =====
-    D({ companyId: c4, clientId: cl5, type: 'acquisto', currency: 'GBP', number: 'PSW-PI-2026-0005', seq: 5, date: '2026-03-31',
-        lines: [
-          L('Rolex Sky-Dweller Mint Green | Ref 336934', 1, 18000),
-          L('Rolex Oyster Perpetual | Ref 126000 | SNR 3488L952', 1, 6700),
-          L('Rolex Land Dweller | Ref 127334 | SNR T8K73738', 1, 18000),
-          L('Rolex Oyster Perpetual | Ref 134300 | SNR U70605Z4', 1, 7500),
-          L('Rolex Explorer | Ref 224270 | SNR LW593791', 1, 6000),
-          L('Rolex Oyster Perpetual | Ref 134300 | SNR S815S022', 1, 8500),
-          L('Patek Philippe Calatrava | Ref 5212A | SNR 7593618/6489485', 1, 28050),
-          L('Patek Philippe Calatrava Weekly Calendar | Ref 5212A-001 | SNR 7664417/6629240', 1, 20000),
-          L('Rolex Oyster Perpetual 41 | Ref 134300 | SNR H40754Q6', 1, 8000),
-          L('Patek Philippe Golden Ellipse | Ref 5738R-001 | SNR 7853723/6840502', 1, 20000),
-          L('Patek Philippe Complication | Ref 5328G-001 | SNR 7736659/6882036', 1, 40000),
-          L('Rolex Oyster Perpetual | Ref 126000 | SNR 5P2W9260', 1, 8250),
-          L('Rolex Daytona | Ref 126508 | SNR P46K5764', 1, 58000)
-        ] }),
-    D({ companyId: c1, clientId: cl5, type: 'acquisto', currency: 'EUR', number: 'EST-PI-2026-0001', seq: 1, date: '2026-04-15',
-        lines: [ L('Rolex Submariner Date | Ref 126610LN | SNR 7K842109', 1, 11800), L('Omega Speedmaster Moonwatch | Ref 310.30.42 | SNR 99887766', 1, 5600) ] }),
-    D({ companyId: c2, clientId: cl5, type: 'acquisto', currency: 'EUR', number: 'PM-PI-2026-0001', seq: 1, date: '2026-04-18',
-        lines: [ L('Audemars Piguet Royal Oak | Ref 15500ST | SNR M01234', 1, 36000), L('Rolex GMT-Master II | Ref 126710BLRO | SNR 8H551020', 1, 17500) ] }),
-    D({ companyId: c3, clientId: cl5, type: 'acquisto', currency: 'EUR', number: 'ALM-PI-2026-0001', seq: 1, date: '2026-04-22',
-        lines: [ L('Cartier Santos | Ref WSSA0018 | SNR PT4490', 1, 6500), L('Vacheron Constantin Overseas | Ref 4500V | SNR BX12345', 1, 26000) ] }),
-  ];
+  const documents = [];
   const incoming = [
     { id: uid(), companyId: c4, supplier: 'Crown & Caliber', docNumber: 'CC-88231', date: '2026-03-12', amount: 18500, currency: 'USD', category: 'Purchase invoice', notes: 'Rolex Daytona acquired for stock.', fileName: 'CC-88231.pdf', fileType: 'application/pdf', fileSize: 747, data: SAMPLE_PDF, createdAt: Date.now() },
     { id: uid(), companyId: c1, supplier: 'DHL Express', docNumber: 'INV-DHL-5521', date: '2026-03-20', amount: 142.5, currency: 'EUR', category: 'Shipping', notes: 'Insured shipment Lisbon to Milan.', fileName: 'dhl-5521.pdf', fileType: 'application/pdf', fileSize: 747, data: SAMPLE_PDF, createdAt: Date.now() },
@@ -3665,6 +3517,10 @@ export default function App() {
     (async () => {
       let s = await Store.get(STORE_KEY);
       if (!s || !s.companies) { s = seedStore(); await Store.set(STORE_KEY, s); }
+      else if ((s.settings?.docClearVersion || 0) < DOC_CLEAR_VERSION) {
+        s = { ...s, documents: [], settings: { ...(s.settings || {}), docClearVersion: DOC_CLEAR_VERSION } };
+        await Store.set(STORE_KEY, s);
+      }
       if (alive) setStore(s);
     })();
     return () => { alive = false; };
