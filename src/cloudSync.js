@@ -11,8 +11,7 @@ export function getWorkspaceFromUrl() {
 }
 
 export function resolveWorkspaceCredentials() {
-  const fromUrl = getWorkspaceFromUrl();
-  if (fromUrl.workspace && fromUrl.key) return fromUrl;
+  // Always use the single shared workspace — URL params are ignored so every PC sees the same data.
   return { workspace: SHARED_WORKSPACE, key: SHARED_KEY };
 }
 

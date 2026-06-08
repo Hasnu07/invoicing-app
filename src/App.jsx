@@ -19,8 +19,9 @@ import {
    Single-file React app. Local persistence + cloud sync via shareable link.
    ============================================================================ */
 
-const STORE_KEY = 'fg_store_v7';
-const DOC_CLOUD_MIGRATION_KEY = 'fg_doc_cloud_only_v1';
+const STORE_KEY = 'fg_store_v8';
+const LEGACY_STORE_KEYS = ['fg_store_v7', 'fg_store_v6'];
+const APP_VERSION = '2026.06.08-cloud2';
 const BACKUP_VERSION = 2;
 const MAX_UPLOAD_BYTES = 8 * 1024 * 1024;
 const ALLOWED_UPLOAD_MIMES = ['application/pdf', 'image/jpeg', 'image/png', 'image/webp', 'image/gif'];
@@ -2019,31 +2020,56 @@ function stripLocalDocuments(store) {
   return normalizeStore({ ...store, documents: [] });
 }
 
-async function initCloudSync(localStore) {
+async function purgeLegacyLocalCache() {
+  try {
+    for (const key of LEGACY_STORE_KEYS) {
+      localStorage.removeItem(key);
+      if (window.storage?.delete) {
+        try { await window.storage.delete(key); } catch (e) { /* */ }
+      }
+    }
+    localStorage.removeItem('fg_doc_cloud_only_v1');
+  } catch (e) { /* ignore */ }
+}
+
+function applyCloudStore(pulled, workspace, key) {
+  return normalizeStore({
+    ...pulled.store,
+    documents: Array.isArray(pulled.store.documents) ? pulled.store.documents : [],
+    settings: {
+      ...(pulled.store.settings || {}),
+      cloudWorkspace: workspace,
+      cloudKey: key,
+      cloudUpdatedAt: pulled.updatedAt,
+      appVersion: APP_VERSION,
+    },
+  });
+}
+
+async function initCloudSync() {
   const { workspace, key } = resolveWorkspaceCredentials();
   setWorkspaceInUrl(workspace, key);
-  const local = stripLocalDocuments(localStore || seedStore());
+  await purgeLegacyLocalCache();
 
   try {
     const pulled = await pullCloudBackup(workspace, key);
     if (pulled) {
-      const s = normalizeStore({
-        ...pulled.store,
-        settings: {
-          ...(pulled.store.settings || {}),
-          cloudWorkspace: workspace,
-          cloudKey: key,
-          cloudUpdatedAt: pulled.updatedAt,
-        },
-      });
+      const s = applyCloudStore(pulled, workspace, key);
       await Store.set(STORE_KEY, s);
       return { store: s, fromCloud: true, error: null };
     }
 
     const s = normalizeStore({
-      ...local,
+      ...seedStore(),
       documents: [],
-      settings: { ...(local.settings || {}), cloudWorkspace: workspace, cloudKey: key, cloudUpdatedAt: 0 },
+      settings: {
+        currency: 'EUR',
+        defaultTemplate: 'classico',
+        cloudWorkspace: workspace,
+        cloudKey: key,
+        cloudUpdatedAt: 0,
+        appVersion: APP_VERSION,
+      },
     });
     await Store.set(STORE_KEY, s);
     try {
@@ -2059,9 +2085,15 @@ async function initCloudSync(localStore) {
     }
   } catch (e) {
     const s = normalizeStore({
-      ...local,
+      ...seedStore(),
       documents: [],
-      settings: { ...(local.settings || {}), cloudWorkspace: workspace, cloudKey: key },
+      settings: {
+        currency: 'EUR',
+        defaultTemplate: 'classico',
+        cloudWorkspace: workspace,
+        cloudKey: key,
+        appVersion: APP_VERSION,
+      },
     });
     await Store.set(STORE_KEY, s);
     return { store: s, fromCloud: false, error: e.message || 'Cloud sync failed' };
@@ -3526,6 +3558,7 @@ function SettingsView({ store, onUpdateSettings, onExport, onImport, onReset, on
                 {cloudStatus === 'saving' ? 'Saving to cloud…' : cloudStatus === 'saved' ? 'Saved to cloud' : cloudStatus === 'error' ? 'Cloud save failed — data kept locally' : 'Ready'}
                 {s.cloudUpdatedAt ? ` · Last saved ${dateFmt(new Date(s.cloudUpdatedAt).toISOString().slice(0, 10))}` : ''}
                 {' · '}{(store.documents || []).length} documents in this workspace
+                {' · '}App {APP_VERSION}
               </span>
             </Field>
             <Field label="Actions" full>
@@ -4334,10 +4367,7 @@ export default function App() {
     try {
       const pulled = await pullCloudBackup(ws, key);
       if (!pulled) { notify('No data found in the cloud yet.', 'error'); return; }
-      const patched = normalizeStore({
-        ...pulled.store,
-        settings: { ...(pulled.store.settings || {}), cloudWorkspace: ws, cloudKey: key, cloudUpdatedAt: pulled.updatedAt },
-      });
+      const patched = applyCloudStore(pulled, ws, key);
       storeRef.current = patched;
       setStore(patched);
       await Store.set(STORE_KEY, patched);
@@ -4370,17 +4400,7 @@ export default function App() {
     let alive = true;
     (async () => {
       setBootMsg('Syncing from cloud…');
-      try {
-        if (!localStorage.getItem(DOC_CLOUD_MIGRATION_KEY)) {
-          const raw = await Store.get(STORE_KEY);
-          if (raw) await Store.set(STORE_KEY, stripLocalDocuments(raw));
-          localStorage.setItem(DOC_CLOUD_MIGRATION_KEY, '1');
-        }
-      } catch (e) { /* ignore migration errors */ }
-      let s = await Store.get(STORE_KEY);
-      if (!s || !s.companies) { s = seedStore(); await Store.set(STORE_KEY, s); }
-      else s = stripLocalDocuments(s);
-      const result = await initCloudSync(s);
+      const result = await initCloudSync();
       if (alive) {
         storeRef.current = result.store;
         setStore(result.store);
@@ -4402,11 +4422,10 @@ export default function App() {
         const pulled = await pullCloudBackup(ws, key);
         if (!pulled) return;
         const localTs = storeRef.current?.settings?.cloudUpdatedAt || 0;
-        if (pulled.updatedAt <= localTs) return;
-        const patched = normalizeStore({
-          ...pulled.store,
-          settings: { ...(pulled.store.settings || {}), cloudWorkspace: ws, cloudKey: key, cloudUpdatedAt: pulled.updatedAt },
-        });
+        const localDocs = (storeRef.current?.documents || []).length;
+        const cloudDocs = (pulled.store?.documents || []).length;
+        if (pulled.updatedAt <= localTs && localDocs === cloudDocs) return;
+        const patched = applyCloudStore(pulled, ws, key);
         storeRef.current = patched;
         setStore(patched);
         await Store.set(STORE_KEY, patched);
