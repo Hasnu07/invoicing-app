@@ -2160,34 +2160,37 @@ async function initCloudSync(localStore) {
   const { workspace, key } = resolveWorkspaceCredentials();
   setWorkspaceInUrl(workspace, key);
   const local = normalizeStore(localStore || seedStore());
-  const localDocs = (local.documents || []).length;
 
   try {
     const pulled = await pullCloudBackup(workspace, key);
     if (pulled) {
-      const cloudDocs = (pulled.store.documents || []).length;
-      if (cloudDocs >= localDocs) {
-        const s = normalizeStore({
-          ...pulled.store,
-          settings: {
-            ...(pulled.store.settings || {}),
-            cloudWorkspace: workspace,
-            cloudKey: key,
-            cloudUpdatedAt: pulled.updatedAt,
-          },
-        });
-        await Store.set(STORE_KEY, s);
-        return s;
-      }
+      const s = normalizeStore({
+        ...pulled.store,
+        settings: {
+          ...(pulled.store.settings || {}),
+          cloudWorkspace: workspace,
+          cloudKey: key,
+          cloudUpdatedAt: pulled.updatedAt,
+        },
+      });
+      await Store.set(STORE_KEY, s);
+      return { store: s, fromCloud: true, error: null };
     }
-  } catch (e) { /* cloud unavailable — fall through to local */ }
+  } catch (e) {
+    const s = normalizeStore({
+      ...local,
+      settings: { ...(local.settings || {}), cloudWorkspace: workspace, cloudKey: key },
+    });
+    await Store.set(STORE_KEY, s);
+    return { store: s, fromCloud: false, error: e.message || 'Cloud sync failed' };
+  }
 
   const s = normalizeStore({
     ...local,
-    settings: { ...(local.settings || {}), cloudWorkspace: workspace, cloudKey: key, cloudUpdatedAt: local.settings?.cloudUpdatedAt || 0 },
+    settings: { ...(local.settings || {}), cloudWorkspace: workspace, cloudKey: key, cloudUpdatedAt: 0 },
   });
   await Store.set(STORE_KEY, s);
-  return s;
+  return { store: s, fromCloud: false, error: null };
 }
 
 function readFileAsDataURL(file) {
@@ -2671,17 +2674,13 @@ function StatusModal({ open, doc, onClose, onPick }) {
   );
 }
 
-function DocumentsList({ store, onNew, onEdit, onView, onDuplicate, onDelete, onStatus, defaultCompanyId }) {
+function DocumentsList({ store, onNew, onEdit, onView, onDuplicate, onDelete, onStatus }) {
   const [q, setQ] = useState('');
   const [fType, setFType] = useState('');
-  const [fCompany, setFCompany] = useState(defaultCompanyId || '');
+  const [fCompany, setFCompany] = useState('');
   const [fStatus, setFStatus] = useState('');
   const [statusFor, setStatusFor] = useState(null);
   const [delFor, setDelFor] = useState(null);
-
-  useEffect(() => {
-    if (defaultCompanyId && !fCompany) setFCompany(defaultCompanyId);
-  }, [defaultCompanyId]);
 
   const rows = useMemo(() => {
     const ql = q.trim().toLowerCase();
@@ -4411,6 +4410,7 @@ export default function App() {
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [cloudStatus, setCloudStatus] = useState('idle');
   const [pulling, setPulling] = useState(false);
+  const [bootMsg, setBootMsg] = useState('Syncing from cloud…');
   const cloudTimerRef = useRef(null);
   const isMobile = useMedia(900);
 
@@ -4494,18 +4494,21 @@ export default function App() {
   useEffect(() => {
     let alive = true;
     (async () => {
+      setBootMsg('Syncing from cloud…');
       let s = await Store.get(STORE_KEY);
       if (!s || !s.companies) { s = seedStore(); await Store.set(STORE_KEY, s); }
       else s = normalizeStore(s);
-      s = await initCloudSync(s);
+      const result = await initCloudSync(s);
       if (alive) {
-        storeRef.current = s;
-        setStore(s);
-        scheduleCloudSave(s);
+        storeRef.current = result.store;
+        setStore(result.store);
+        setCloudStatus(result.fromCloud ? 'saved' : 'idle');
+        if (result.error) notify(`${result.error}. Open Settings → Pull from cloud.`, 'error');
+        setBootMsg('');
       }
     })();
     return () => { alive = false; };
-  }, [scheduleCloudSave]);
+  }, [notify]);
 
   // Poll cloud on interval and when returning to this tab
   useEffect(() => {
@@ -4541,7 +4544,7 @@ export default function App() {
     return (
       <div className="fg boot">
         <style>{APP_CSS}</style>
-        <div className="boot-card"><span className="brand-mark"><Receipt size={22} /></span><span>Loading…</span></div>
+        <div className="boot-card"><span className="brand-mark"><Receipt size={22} /></span><span>{bootMsg || 'Loading…'}</span></div>
       </div>
     );
   }
@@ -4732,7 +4735,7 @@ export default function App() {
 
   let viewNode = null;
   if (view === 'dashboard') viewNode = <Dashboard store={store} onNew={() => setDocEditor({ draftType: 'fattura' })} onView={(d) => setViewerDoc(d)} onGo={() => setView('documenti')} />;
-  else if (view === 'documenti') viewNode = <DocumentsList store={store} defaultCompanyId={defaultCompanyId} onNew={() => setDocEditor({ draftType: 'fattura' })} onEdit={(d) => setDocEditor({ id: d.id })} onView={(d) => setViewerDoc(d)} onDuplicate={duplicateDoc} onDelete={deleteDoc} onStatus={setDocStatus} />;
+  else if (view === 'documenti') viewNode = <DocumentsList store={store} onNew={() => setDocEditor({ draftType: 'fattura' })} onEdit={(d) => setDocEditor({ id: d.id })} onView={(d) => setViewerDoc(d)} onDuplicate={duplicateDoc} onDelete={deleteDoc} onStatus={setDocStatus} />;
   else if (view === 'aziende') viewNode = <CompaniesView store={store} onNew={() => setCompanyEditor({})} onEdit={(co) => setCompanyEditor({ id: co.id })} onDelete={deleteCompany} onSetDefault={setDefaultCompany} onNotify={notify} />;
   else if (view === 'clienti') viewNode = <ClientsView store={store} onSave={upsertClient} onDelete={deleteClient} onAddFile={addClientFile} onDeleteFile={deleteClientFile} onNotify={notify} />;
   else if (view === 'listino') viewNode = <ProductsView store={store} onSave={upsertProduct} onDelete={deleteProduct} />;
