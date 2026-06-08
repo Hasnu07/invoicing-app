@@ -11,8 +11,7 @@ export function getWorkspaceFromUrl() {
 }
 
 export function resolveWorkspaceCredentials() {
-  const fromUrl = getWorkspaceFromUrl();
-  if (fromUrl.workspace && fromUrl.key) return fromUrl;
+  // Always use the single shared workspace — URL params are ignored so every PC sees the same data.
   return { workspace: SHARED_WORKSPACE, key: SHARED_KEY };
 }
 
@@ -69,14 +68,23 @@ export async function saveToCloud(workspace, key, jsonString) {
   return updatedAt;
 }
 
-export async function loadFromCloud(workspace, key) {
-  const manifest = await mantleRequest('GET', workspace, key, 'data/manifest');
-  if (!manifest || !manifest.chunks) return null;
-  let str = '';
-  for (let i = 0; i < manifest.chunks; i++) {
-    const chunk = await mantleRequest('GET', workspace, key, `data/chunk/${i}`);
-    if (!chunk || chunk.data == null) return null;
-    str += chunk.data;
+export async function loadFromCloud(workspace, key, retries = 3) {
+  let lastErr = null;
+  for (let attempt = 0; attempt < retries; attempt++) {
+    try {
+      const manifest = await mantleRequest('GET', workspace, key, 'data/manifest');
+      if (!manifest || !manifest.chunks) return null;
+      let str = '';
+      for (let i = 0; i < manifest.chunks; i++) {
+        const chunk = await mantleRequest('GET', workspace, key, `data/chunk/${i}`);
+        if (!chunk || chunk.data == null) throw new Error('Incomplete cloud backup');
+        str += chunk.data;
+      }
+      return { json: str, updatedAt: manifest.updatedAt || 0 };
+    } catch (e) {
+      lastErr = e;
+      if (attempt < retries - 1) await new Promise((r) => setTimeout(r, 600 * (attempt + 1)));
+    }
   }
-  return { json: str, updatedAt: manifest.updatedAt || 0 };
+  throw lastErr || new Error('Could not load from cloud');
 }
