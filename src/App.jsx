@@ -16,7 +16,7 @@ import {
    ============================================================================ */
 
 const STORE_KEY = 'fg_store_v7';
-const DOC_CLEAR_VERSION = 1;
+const DOC_CLEAR_VERSION = 2;
 
 // ---------------------------------------------------------------- Doc types ---
 const DOC_TYPES = {
