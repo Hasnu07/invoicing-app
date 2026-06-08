@@ -1,9 +1,19 @@
 const MANTLE_BASE = 'https://mantledb.sh/v2';
 const MAX_CHUNK = 50000;
 
+// Shared workspace — all devices use the same cloud store (source of truth).
+export const SHARED_WORKSPACE = 'hasnu07-invoices';
+export const SHARED_KEY = 'fc121665e8bc2cbba24dd1e924c381155bc59497c682b93a0ee838c879e31fd9';
+
 export function getWorkspaceFromUrl() {
   const p = new URLSearchParams(window.location.search);
   return { workspace: p.get('w') || '', key: p.get('k') || '' };
+}
+
+export function resolveWorkspaceCredentials() {
+  const fromUrl = getWorkspaceFromUrl();
+  if (fromUrl.workspace && fromUrl.key) return fromUrl;
+  return { workspace: SHARED_WORKSPACE, key: SHARED_KEY };
 }
 
 export function setWorkspaceInUrl(workspace, key) {

@@ -8,7 +8,7 @@ import {
   Inbox, Paperclip, ExternalLink, Cloud, Link2
 } from 'lucide-react';
 import {
-  getWorkspaceFromUrl, setWorkspaceInUrl, buildSyncLink, newWorkspaceId,
+  getWorkspaceFromUrl, setWorkspaceInUrl, buildSyncLink, resolveWorkspaceCredentials,
   claimWorkspace, saveToCloud, loadFromCloud,
 } from './cloudSync.js';
 
@@ -2157,42 +2157,34 @@ async function pullCloudBackup(workspace, key) {
 }
 
 async function initCloudSync(localStore) {
-  let s = localStore;
-  let { workspace, key } = getWorkspaceFromUrl();
-  if (!workspace && s.settings?.cloudWorkspace) {
-    workspace = s.settings.cloudWorkspace;
-    key = s.settings.cloudKey || '';
-  }
-  if (!workspace) {
-    workspace = newWorkspaceId();
-    try {
-      const claimed = await claimWorkspace(workspace);
-      workspace = claimed.workspace;
-      key = claimed.key;
-    } catch (e) {
-      return s;
-    }
-  }
+  const { workspace, key } = resolveWorkspaceCredentials();
   setWorkspaceInUrl(workspace, key);
-  let cloudUpdatedAt = s.settings?.cloudUpdatedAt || 0;
+  const local = normalizeStore(localStore || seedStore());
+  const localDocs = (local.documents || []).length;
+
   try {
     const pulled = await pullCloudBackup(workspace, key);
     if (pulled) {
-      const cloudStore = pulled.store;
-      const localDocs = (s.documents || []).length;
-      const cloudDocs = (cloudStore.documents || []).length;
-      const localTs = s.settings?.cloudUpdatedAt || 0;
-      const cloudTs = pulled.updatedAt;
-      const useCloud = cloudTs > localTs || (localDocs === 0 && cloudDocs > 0) || cloudDocs > localDocs;
-      if (useCloud) {
-        s = cloudStore;
-        cloudUpdatedAt = cloudTs;
+      const cloudDocs = (pulled.store.documents || []).length;
+      if (cloudDocs >= localDocs) {
+        const s = normalizeStore({
+          ...pulled.store,
+          settings: {
+            ...(pulled.store.settings || {}),
+            cloudWorkspace: workspace,
+            cloudKey: key,
+            cloudUpdatedAt: pulled.updatedAt,
+          },
+        });
+        await Store.set(STORE_KEY, s);
+        return s;
       }
     }
-  } catch (e) { /* keep local copy */ }
-  s = normalizeStore({
-    ...s,
-    settings: { ...(s.settings || {}), cloudWorkspace: workspace, cloudKey: key, cloudUpdatedAt },
+  } catch (e) { /* cloud unavailable — fall through to local */ }
+
+  const s = normalizeStore({
+    ...local,
+    settings: { ...(local.settings || {}), cloudWorkspace: workspace, cloudKey: key, cloudUpdatedAt: local.settings?.cloudUpdatedAt || 0 },
   });
   await Store.set(STORE_KEY, s);
   return s;
@@ -3645,7 +3637,7 @@ function SettingsView({ store, onUpdateSettings, onExport, onImport, onReset, on
       </div>
       <div className="panel">
         <div className="panel-title sec">Cloud sync</div>
-        <p className="hint-block">Your data (companies, stamps, documents, attachments) is saved to the cloud automatically. Open the same link in any browser to access everything.</p>
+        <p className="hint-block">All devices share one cloud workspace automatically — the same documents, stamps, and companies appear everywhere. Local storage is only a cache; cloud is the source of truth.</p>
         {syncLink ? (
           <div className="form-grid">
             <Field label="Your sync link" full hint="Bookmark this link or open it on another device. Keep it private — anyone with the link can access your data.">
@@ -4423,14 +4415,12 @@ export default function App() {
   const isMobile = useMedia(900);
 
   const syncLink = useMemo(() => {
-    const ws = store?.settings?.cloudWorkspace;
-    const key = store?.settings?.cloudKey;
-    return ws && key ? buildSyncLink(ws, key) : '';
-  }, [store?.settings?.cloudWorkspace, store?.settings?.cloudKey]);
+    const { workspace, key } = resolveWorkspaceCredentials();
+    return workspace && key ? buildSyncLink(workspace, key) : '';
+  }, [store?.settings?.cloudUpdatedAt]);
 
   const scheduleCloudSave = useCallback((nextStore) => {
-    const ws = nextStore?.settings?.cloudWorkspace;
-    const key = nextStore?.settings?.cloudKey;
+    const { workspace: ws, key } = resolveWorkspaceCredentials();
     if (!ws || !key) return;
     clearTimeout(cloudTimerRef.current);
     setCloudStatus('saving');
@@ -4467,13 +4457,12 @@ export default function App() {
   }, [syncLink]);
 
   const pullFromCloud = useCallback(async () => {
-    const ws = storeRef.current?.settings?.cloudWorkspace;
-    const key = storeRef.current?.settings?.cloudKey;
-    if (!ws || !key) { notify('No sync link configured yet.', 'error'); return; }
+    const { workspace: ws, key } = resolveWorkspaceCredentials();
+    if (!ws || !key) { notify('Cloud workspace not configured.', 'error'); return; }
     setPulling(true);
     try {
       const pulled = await pullCloudBackup(ws, key);
-      if (!pulled) { notify('No data found in the cloud for this link.', 'error'); return; }
+      if (!pulled) { notify('No data found in the cloud yet.', 'error'); return; }
       const patched = normalizeStore({
         ...pulled.store,
         settings: { ...(pulled.store.settings || {}), cloudWorkspace: ws, cloudKey: key, cloudUpdatedAt: pulled.updatedAt },
@@ -4482,7 +4471,7 @@ export default function App() {
       setStore(patched);
       await Store.set(STORE_KEY, patched);
       setCloudStatus('saved');
-      notify(`Pulled from cloud — ${(patched.documents || []).length} documents loaded.`, 'warn');
+      notify(`Synced from cloud — ${(patched.documents || []).length} documents.`, 'warn');
     } catch (e) {
       notify(e.message || 'Could not pull from cloud.', 'error');
     } finally {
@@ -4512,25 +4501,39 @@ export default function App() {
       if (alive) {
         storeRef.current = s;
         setStore(s);
-        if ((s.documents || []).length > 0) scheduleCloudSave(s);
+        scheduleCloudSave(s);
       }
     })();
     return () => { alive = false; };
-  }, []);
+  }, [scheduleCloudSave]);
 
+  // Poll cloud on interval and when returning to this tab
   useEffect(() => {
-    const onStorage = async (e) => {
-      if (e.key !== STORE_KEY && e.key !== null) return;
-      const remote = await Store.get(STORE_KEY);
-      if (!remote) return;
-      const normalized = normalizeStore(remote);
-      storeRef.current = normalized;
-      setStore(normalized);
-      notify('Data was updated in another browser tab.', 'warn');
+    const syncFromCloud = async (silent = true) => {
+      if (!storeRef.current) return;
+      const { workspace: ws, key } = resolveWorkspaceCredentials();
+      if (!ws || !key) return;
+      try {
+        const pulled = await pullCloudBackup(ws, key);
+        if (!pulled) return;
+        const localTs = storeRef.current?.settings?.cloudUpdatedAt || 0;
+        if (pulled.updatedAt <= localTs) return;
+        const patched = normalizeStore({
+          ...pulled.store,
+          settings: { ...(pulled.store.settings || {}), cloudWorkspace: ws, cloudKey: key, cloudUpdatedAt: pulled.updatedAt },
+        });
+        storeRef.current = patched;
+        setStore(patched);
+        await Store.set(STORE_KEY, patched);
+        setCloudStatus('saved');
+        if (!silent) notify(`Synced — ${(patched.documents || []).length} documents.`, 'warn');
+      } catch (e) { /* ignore */ }
     };
-    window.addEventListener('storage', onStorage);
-    return () => window.removeEventListener('storage', onStorage);
-  }, []);
+    const id = setInterval(() => syncFromCloud(true), 30000);
+    const onFocus = () => syncFromCloud(true);
+    window.addEventListener('focus', onFocus);
+    return () => { clearInterval(id); window.removeEventListener('focus', onFocus); };
+  }, [notify]);
 
   useEffect(() => { setDrawerOpen(false); }, [view]);
 
