@@ -5,18 +5,25 @@ import {
   Search, X, ChevronUp, ChevronDown, Check, Image as ImageIcon, Upload, Palette, Save,
   ArrowLeft, CreditCard, Calendar, AlertTriangle, Pencil, Banknote, Hash, Mail, Phone,
   Globe, MapPin, ChevronRight, Filter, FileDown, MoreHorizontal, CircleDot,
-  Inbox, Paperclip, ExternalLink
+  Inbox, Paperclip, ExternalLink, Cloud, Link2
 } from 'lucide-react';
+import {
+  getWorkspaceFromUrl, setWorkspaceInUrl, buildSyncLink, newWorkspaceId,
+  claimWorkspace, saveToCloud, loadFromCloud,
+} from './cloudSync.js';
 
 /* ============================================================================
    INVOICES — Multi-company document generator
    Invoices · Delivery notes · Pro-forma · Credit notes · Quotes · Receipts
    Customizable themes · Live preview · Print/PDF · HTML
-   Single-file React app. Persistence: window.storage. No backend.
+   Single-file React app. Local persistence + cloud sync via shareable link.
    ============================================================================ */
 
 const STORE_KEY = 'fg_store_v7';
 const DOC_CLEAR_VERSION = 2;
+const BACKUP_VERSION = 2;
+const MAX_UPLOAD_BYTES = 8 * 1024 * 1024;
+const ALLOWED_UPLOAD_MIMES = ['application/pdf', 'image/jpeg', 'image/png', 'image/webp', 'image/gif'];
 
 // ---------------------------------------------------------------- Doc types ---
 const DOC_TYPES = {
@@ -81,12 +88,147 @@ const DEFAULT_THEME = {
   showPaymentBox: true,
   showNotes: true,
   showSignature: false,
+  showStamp: false,
+  stampTemplate: '',
+  stampImage: '',
+  stampPosition: 'bottom-right',
+  stampOpacity: 0.85,
+  stampPosX: null,
+  stampPosY: null,
   accentStyle: 'band', // band | line | soft
   customHTML: '',       // user-provided HTML for the 'custom' template (token-filled)
   customHTMLBuy: '',    // brand-styled acquisition-note (purchase invoice) template
 };
 
 const GOOGLE_FONTS = "https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600&family=Hanken+Grotesk:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&family=Public+Sans:wght@400;500;600;700&display=swap";
+
+const STAMP_PRESETS = [
+  { id: 'paid', label: 'Paid', color: '#16a34a', shape: 'circle', text: 'PAID', rot: -20 },
+  { id: 'approved', label: 'Approved', color: '#1d4ed8', shape: 'circle', text: 'APPROVED', rot: -15 },
+  { id: 'draft', label: 'Draft', color: '#dc2626', shape: 'rect', text: 'DRAFT', rot: -12 },
+  { id: 'copy', label: 'Copy', color: '#6b7280', shape: 'circle', text: 'COPY', rot: -20 },
+  { id: 'void', label: 'Void', color: '#dc2626', shape: 'rect', text: 'VOID', rot: -10 },
+  { id: 'original', label: 'Original', color: '#1e3a5f', shape: 'rect', text: 'ORIGINAL', rot: -8 },
+];
+
+function buildStampSVG({ color, shape, text, rot }) {
+  if (shape === 'circle') {
+    const compact = text.length > 5;
+    return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200"><g transform="rotate(${rot} 100 100)"><circle cx="100" cy="100" r="88" fill="none" stroke="${color}" stroke-width="7"/><circle cx="100" cy="100" r="76" fill="none" stroke="${color}" stroke-width="2.5"/><text x="100" y="${compact ? 108 : 116}" text-anchor="middle" font-family="Arial Black,Arial,sans-serif" font-size="${compact ? 24 : 44}" font-weight="900" fill="${color}" letter-spacing="3">${text}</text></g></svg>`;
+  }
+  const w = text.length > 5 ? 300 : 240;
+  const fs = text.length > 5 ? 44 : 56;
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${w} 120"><g transform="rotate(${rot} ${w / 2} 60)"><rect x="8" y="8" width="${w - 16}" height="104" rx="8" fill="none" stroke="${color}" stroke-width="6"/><rect x="16" y="16" width="${w - 32}" height="88" rx="5" fill="none" stroke="${color}" stroke-width="2"/><text x="${w / 2}" y="80" text-anchor="middle" font-family="Arial Black,Arial,sans-serif" font-size="${fs}" font-weight="900" fill="${color}" letter-spacing="4">${text}</text></g></svg>`;
+}
+
+function stampPresetToDataUrl(preset) {
+  return 'data:image/svg+xml,' + encodeURIComponent(buildStampSVG(preset));
+}
+
+function resolveStampImageSrc(theme) {
+  if (theme.stampImage) return safeImageSrc(theme.stampImage) || '';
+  if (theme.stampTemplate) {
+    const preset = STAMP_PRESETS.find((p) => p.id === theme.stampTemplate);
+    if (preset) return stampPresetToDataUrl(preset);
+  }
+  return '';
+}
+
+const STAMP_THEME_KEYS = ['showStamp', 'stampTemplate', 'stampImage', 'stampPosition', 'stampOpacity', 'stampPosX', 'stampPosY'];
+
+function pickStampTheme(theme) {
+  const o = {};
+  for (const k of STAMP_THEME_KEYS) {
+    if (!theme || theme[k] === undefined || theme[k] === null) continue;
+    if (k === 'showStamp' || theme[k] !== '') o[k] = theme[k];
+  }
+  return o;
+}
+
+function stampPresetXY(position) {
+  if (position === 'bottom-left') return { x: 16, y: 88 };
+  if (position === 'center') return { x: 50, y: 50 };
+  return { x: 84, y: 88 };
+}
+
+const STAMP_H_MM = 36;
+const STAMP_A4_H_MM = 297;
+const STAMP_A4_W_MM = 210;
+const STAMP_MAX_Y = Math.round(((STAMP_A4_H_MM - STAMP_H_MM / 2 - 4) / STAMP_A4_H_MM) * 1000) / 10;
+
+function getStampXY(theme) {
+  let x;
+  let y;
+  if (theme.stampPosX != null && theme.stampPosY != null) {
+    x = clamp(num(theme.stampPosX), 0, 100);
+    y = clamp(num(theme.stampPosY), 0, 100);
+  } else {
+    ({ x, y } = stampPresetXY(theme.stampPosition || 'bottom-right'));
+  }
+  return { x: clamp(x, 3, 97), y: clamp(y, 3, STAMP_MAX_Y) };
+}
+
+function stampPositionStyle(theme) {
+  const { x, y } = getStampXY(theme);
+  const leftMm = Math.round((x / 100) * STAMP_A4_W_MM * 10) / 10;
+  const topMm = Math.round((y / 100) * STAMP_A4_H_MM * 10) / 10;
+  return `left:${leftMm}mm;top:${topMm}mm;transform:translate(-50%,-50%);`;
+}
+
+function buildStampOverlayHTML(theme) {
+  if (!theme.showStamp) return '';
+  const src = resolveStampImageSrc(theme);
+  if (!src) return '';
+  const posStyle = stampPositionStyle(theme);
+  const opacity = theme.stampOpacity != null ? theme.stampOpacity : 0.85;
+  const img = `<img src="${src.replace(/"/g, '')}" alt="" style="width:100%;height:auto;opacity:${opacity};mix-blend-mode:multiply;display:block;"/>`;
+  return `<div class="stamp-anchor"><div class="stamp-overlay-block" style="position:absolute;${posStyle}pointer-events:none;width:55mm;print-color-adjust:exact;-webkit-print-color-adjust:exact;">${img}</div></div>`;
+}
+
+const STAMP_PAGE_CSS = '.page{position:relative!important;overflow:visible!important;}.stamp-anchor{position:absolute;top:0;left:0;width:100%;height:297mm;max-height:297mm;pointer-events:none;z-index:10;overflow:visible;}.stamp-overlay-block{position:absolute!important;z-index:11;break-inside:avoid;page-break-inside:avoid;-webkit-column-break-inside:avoid;}@media print{.page{position:relative!important;overflow:visible!important;}.stamp-anchor{height:297mm;max-height:297mm;break-inside:avoid;page-break-inside:avoid;}.stamp-overlay-block{position:absolute!important;break-inside:avoid;page-break-inside:avoid;print-color-adjust:exact;-webkit-print-color-adjust:exact;}}';
+
+function ensureStampPageCSS(html) {
+  if (!html || html.includes('.stamp-anchor{position:absolute;top:0;left:0;width:100%;height:297mm')) return html;
+  if (/<style/i.test(html)) {
+    return html.replace(/<style([^>]*)>/i, `<style$1>${STAMP_PAGE_CSS}`);
+  }
+  if (/<head[\s>]/i.test(html)) {
+    return html.replace(/<head([^>]*)>/i, `<head$1><style>${STAMP_PAGE_CSS}</style>`);
+  }
+  return html;
+}
+
+function findFirstPageInsertIndex(html) {
+  const pageRe = /<div\s+class=["'][^"']*\bpage\b[^"']*["'][^>]*>/i;
+  const start = html.search(pageRe);
+  if (start < 0) return -1;
+  const openEnd = html.indexOf('>', start) + 1;
+  const rest = html.slice(openEnd);
+  const secondMatch = rest.search(/<div\s+class=["'][^"']*\bpage\b[^"']*["']/i);
+  const segmentEnd = secondMatch >= 0 ? openEnd + secondMatch : html.search(/<\/body>/i);
+  if (segmentEnd < 0) return -1;
+  const segment = html.slice(start, segmentEnd);
+  const relativeClose = segment.lastIndexOf('</div>');
+  if (relativeClose < 0) return -1;
+  return start + relativeClose;
+}
+
+function injectStampIntoFirstPage(html, stampHTML) {
+  if (!stampHTML || html.includes('stamp-anchor')) return html;
+  const withCss = ensureStampPageCSS(html);
+  const pageRe = /<div\s+class=["'][^"']*\bpage\b[^"']*["'][^>]*>/i;
+  const start = withCss.search(pageRe);
+  if (start >= 0) {
+    const openEnd = withCss.indexOf('>', start) + 1;
+    return withCss.slice(0, openEnd) + stampHTML + withCss.slice(openEnd);
+  }
+  const insertAt = findFirstPageInsertIndex(withCss);
+  if (insertAt >= 0) {
+    return withCss.slice(0, insertAt) + stampHTML + withCss.slice(insertAt);
+  }
+  if (/<\/body>/i.test(withCss)) return withCss.replace(/<\/body>/i, `${stampHTML}</body>`);
+  return withCss + stampHTML;
+}
 
 // ----------------------------------------------------------------- Helpers ---
 const uid = () => Math.random().toString(36).slice(2, 9) + Date.now().toString(36).slice(-3);
@@ -304,7 +446,8 @@ function companyName(c) {
   return esc((c.name || '') + (fg ? '' : '')) + (fg ? `<span class="fg">${esc(c.forma)}</span>` : '');
 }
 
-function buildDocumentHTML(doc, company, client, settings) {
+function buildDocumentHTML(doc, company, client, settings, opts = {}) {
+  const omitStamp = !!opts.omitStamp;
   const t = effectiveTheme(company, doc);
   const meta = DOC_TYPES[doc.type] || DOC_TYPES.fattura;
   const cur = doc.currency || (settings && settings.currency) || 'EUR';
@@ -433,10 +576,12 @@ function buildDocumentHTML(doc, company, client, settings) {
   }
   const legalHTML = legalBits.length ? `<div class="legal">${legalBits.join(' · ')}</div>` : '';
   const footerText = t.footerText || (company && company.footerText) || '';
+  const stampHTML = omitStamp ? '' : buildStampOverlayHTML(t);
 
   // ---- Logo ----
-  const logo = (t.showLogo && company && company.logo)
-    ? `<div class="logo"><img src="${company.logo}" alt="logo"/></div>` : '';
+  const logoSrc = safeImageSrc(company && company.logo);
+  const logo = (t.showLogo && logoSrc)
+    ? `<div class="logo"><img src="${logoSrc}" alt="logo"/></div>` : '';
 
   // ---- Party blocks (issuer/recipient) ----
   const companyBlock = `
@@ -470,7 +615,7 @@ function buildDocumentHTML(doc, company, client, settings) {
   if (t.template === 'moderno') {
     header = `
       <div class="band">
-        <div class="band-l">${t.showLogo && company && company.logo ? `<img class="band-logo" src="${company.logo}" alt="logo"/>` : `<div class="band-name">${esc((company && company.name) || '')}</div>`}</div>
+        <div class="band-l">${t.showLogo && logoSrc ? `<img class="band-logo" src="${logoSrc}" alt="logo"/>` : `<div class="band-name">${esc((company && company.name) || '')}</div>`}</div>
         <div class="band-r"><div class="band-title">${docTitle}</div><div class="band-num">${esc(doc.number || formatDocNumber(doc.type, doc.seq, doc.year))} · ${dateFmt(doc.date)}</div></div>
       </div>
       <div class="cards">
@@ -527,8 +672,10 @@ function buildDocumentHTML(doc, company, client, settings) {
     * { box-sizing: border-box; }
     html, body { margin: 0; padding: 0; }
     body { font-family: ${font.body}; color: ${ink}; background: #f1f2f4; -webkit-print-color-adjust: exact; print-color-adjust: exact; font-size: 12px; line-height: 1.5; }
-    .page { width: 210mm; min-height: 297mm; margin: 0 auto; background: #fff; padding: 16mm 16mm 14mm; position: relative; }
-    @media print { body { background: #fff; } .page { box-shadow: none; margin: 0; } }
+    .page { width: 210mm; min-height: 297mm; margin: 0 auto; background: #fff; padding: 16mm 16mm 14mm; position: relative; overflow: visible; }
+    .stamp-anchor { position: absolute; top: 0; left: 0; width: 100%; height: 297mm; max-height: 297mm; pointer-events: none; z-index: 10; overflow: visible; }
+    .stamp-overlay-block { position: absolute !important; z-index: 11; break-inside: avoid; page-break-inside: avoid; }
+    @media print { body { background: #fff; } .page { box-shadow: none; margin: 0; position: relative !important; overflow: visible !important; } .stamp-anchor { height: 297mm; max-height: 297mm; break-inside: avoid; page-break-inside: avoid; } .stamp-overlay-block { position: absolute !important; break-inside: avoid; page-break-inside: avoid; } }
     h1,h2,h3,.pname,.doc-title,.band-title,.mini-title,.ele-title,.boxtitle,.cardlab,.mlab,.tlab,.plab,th { font-family: ${font.head}; }
     .fg { font-weight: 400; opacity: .72; font-size: .9em; }
     .ph { color: #b8bdc6; font-weight: 400; }
@@ -680,7 +827,7 @@ function buildDocumentHTML(doc, company, client, settings) {
         rea: company.rea || '', capital: company.capitale || '', email: company.email || '', phone: company.phone || '',
         bank: company.bank || '', iban: company.iban || '', swift: company.swift || '',
         iban_plain: (company.iban || '').replace(/\s+/g, ''),
-        bank_info: company.bankInfo ? nl2br(company.bankInfo) : '', logo: company.logo || '',
+        bank_info: company.bankInfo ? nl2br(company.bankInfo) : '', logo: logoSrc,
       } : {},
       client: client ? {
         name: client.name || '', forma: client.forma || '', address: client.address || '', cap: client.cap || '',
@@ -729,18 +876,23 @@ function buildDocumentHTML(doc, company, client, settings) {
       has_notes: !!doc.notes, has_tax_notes: !!doc.causaleFiscale, has_transport: isGoods,
       has_payment: !!meta.money, has_withholding: !!(totals && totals.ritenuta > 0),
       has_fund: !!(totals && totals.cassaAmount > 0), has_stamp: !!(totals && totals.bollo > 0),
-      has_logo: !!(t.showLogo && company && company.logo), is_goods: isGoods, has_values: showValues,
+      has_logo: !!(t.showLogo && logoSrc), is_goods: isGoods, has_values: showValues,
+      stamp_block: stampHTML,
     };
     const tpl = (doc.type === 'acquisto' && t.customHTMLBuy && t.customHTMLBuy.trim()) ? t.customHTMLBuy : ((t.customHTML && t.customHTML.trim()) ? t.customHTML : CUSTOM_STARTER);
-    const rendered = renderTemplate(tpl, ctx);
-    if (/<!doctype|<html[\s>]/i.test(rendered)) return rendered;
+    const rendered = sanitizeHTML(renderTemplate(tpl, ctx));
+    if (/<!doctype|<html[\s>]/i.test(rendered)) {
+      return sanitizeHTML(injectStampIntoFirstPage(rendered, stampHTML));
+    }
     // body fragment -> wrap with the standard stylesheet so {{{items_table}}}/{{{totals_block}}} render styled
-    return `<!doctype html><html lang="en"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1"/><title>${esc(doc.number || meta.label)} — ${esc((company && company.name) || '')}</title><style>${css}</style></head><body class="${t.template} tpl-custom">${rendered}</body></html>`;
+    const wrapped = `<!doctype html><html lang="en"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1"/><title>${esc(doc.number || meta.label)} — ${esc((company && company.name) || '')}</title><style>${css}</style></head><body class="${t.template} tpl-custom">${rendered}</body></html>`;
+    return sanitizeHTML(injectStampIntoFirstPage(wrapped, stampHTML));
   }
 
-  return `<!doctype html><html lang="en"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1"/><title>${esc(doc.number || meta.label)} — ${esc((company && company.name) || '')}</title><style>${css}</style></head>
+  return sanitizeHTML(`<!doctype html><html lang="en"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1"/><title>${esc(doc.number || meta.label)} — ${esc((company && company.name) || '')}</title><style>${css}</style></head>
   <body class="${t.template}">
     <div class="page tpl-${t.template}">
+      ${stampHTML}
       ${header}
       <table class="items"><thead><tr>${head.join('')}</tr></thead><tbody>${body}${emptyRows}</tbody></table>
       ${transportHTML}
@@ -750,8 +902,9 @@ function buildDocumentHTML(doc, company, client, settings) {
       ${signatureHTML}
       ${legalHTML}
       ${footerText ? `<div class="ftext">${nl2br(footerText)}</div>` : ''}
+      ${stampHTML}
     </div>
-  </body></html>`;
+  </body></html>`);
 }
 
 // ============================================================================
@@ -1672,13 +1825,15 @@ const Store = {
     try { if (window.storage && window.storage.get) { const r = await window.storage.get(key); return r ? JSON.parse(r.value) : null; } }
     catch (e) { /* fallthrough */ }
     try { const s = localStorage.getItem(key); if (s != null) return JSON.parse(s); } catch (e) { /* */ }
-    return _mem[key] != null ? JSON.parse(_mem[key]) : null;
+    try { return _mem[key] != null ? JSON.parse(_mem[key]) : null; } catch (e) { return null; }
   },
   async set(key, obj) {
     const s = JSON.stringify(obj);
     _mem[key] = s;
-    try { localStorage.setItem(key, s); } catch (e) { /* quota exceeded: keep in memory */ }
-    try { if (window.storage && window.storage.set) { await window.storage.set(key, s); } } catch (e) { /* noop */ }
+    let persisted = false;
+    try { localStorage.setItem(key, s); persisted = true; } catch (e) { /* quota exceeded */ }
+    try { if (window.storage && window.storage.set) { await window.storage.set(key, s); persisted = true; } } catch (e) { /* noop */ }
+    return persisted;
   },
 };
 
@@ -1693,8 +1848,10 @@ const FileStore = {
   },
   async set(key, val) {
     _fmem[key] = val;
-    try { localStorage.setItem('_f_' + key, val); } catch (e) { /* oversize: kept in memory */ }
-    try { if (window.storage && window.storage.set) { await window.storage.set(key, val); } } catch (e) { /* */ }
+    let persisted = false;
+    try { localStorage.setItem('_f_' + key, val); persisted = true; } catch (e) { /* oversize */ }
+    try { if (window.storage && window.storage.set) { await window.storage.set(key, val); persisted = true; } } catch (e) { /* */ }
+    return persisted;
   },
   async del(key) {
     delete _fmem[key];
@@ -1702,6 +1859,185 @@ const FileStore = {
     try { if (window.storage && window.storage.delete) { await window.storage.delete(key); } } catch (e) { /* */ }
   },
 };
+
+// -------------------------------------------------------- Storage / data layer ---
+function sanitizeHTML(html) {
+  let out = String(html ?? '');
+  out = out.replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '');
+  out = out.replace(/<iframe\b[^>]*>[\s\S]*?<\/iframe>/gi, '');
+  out = out.replace(/<object\b[^>]*>[\s\S]*?<\/object>/gi, '');
+  out = out.replace(/<embed\b[^>]*\/?>/gi, '');
+  out = out.replace(/\s(on\w+|formaction|xmlns)\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/gi, '');
+  out = out.replace(/javascript:/gi, '');
+  out = out.replace(/data:(?!image\/)[^"'\\s>]*/gi, '');
+  return out;
+}
+
+function safeImageSrc(url) {
+  const s = String(url ?? '').trim();
+  if (!s) return '';
+  if (/^data:image\/(png|jpe?g|webp|gif|svg\+xml);base64,/i.test(s)) return s.replace(/"/g, '');
+  if (/^https?:\/\//i.test(s)) return s.replace(/"/g, '');
+  return '';
+}
+
+function validateUploadFile(file, { maxBytes = MAX_UPLOAD_BYTES, mimes = ALLOWED_UPLOAD_MIMES } = {}) {
+  if (!file) return 'No file selected.';
+  if (file.size > maxBytes) return `File is too large (max ${Math.round(maxBytes / (1024 * 1024))} MB).`;
+  const mime = (file.type || '').toLowerCase();
+  if (mime && !mimes.includes(mime)) return `File type not allowed (${mime || 'unknown'}).`;
+  return '';
+}
+
+function collectFileKeys(store) {
+  const keys = new Set();
+  for (const c of store.clients || []) {
+    for (const a of c.attachments || []) { if (a.fileKey) keys.add(a.fileKey); }
+  }
+  for (const r of store.incoming || []) { if (r.fileKey) keys.add(r.fileKey); }
+  return [...keys];
+}
+
+async function purgeFileKeys(keys) {
+  for (const key of keys) { try { await FileStore.del(key); } catch (e) { /* */ } }
+}
+
+async function collectReferencedFileKeys(store) {
+  return new Set(collectFileKeys(store));
+}
+
+async function purgeOrphanFiles(store) {
+  const referenced = await collectReferencedFileKeys(store);
+  const orphans = [];
+  for (let i = 0; i < localStorage.length; i++) {
+    const k = localStorage.key(i);
+    if (k && k.startsWith('_f_fg_file_')) {
+      const fk = k.slice(3);
+      if (!referenced.has(fk)) orphans.push(fk);
+    }
+  }
+  await purgeFileKeys(orphans);
+  return orphans.length;
+}
+
+function applyAutoStatuses(store) {
+  const today = todayISO();
+  const documents = (store.documents || []).map((d) => {
+    if (d.type !== 'fattura') return d;
+    if (!['emessa', 'inviata'].includes(d.status)) return d;
+    if (d.dueDate && d.dueDate < today) return { ...d, status: 'scaduta' };
+    return d;
+  });
+  return { ...store, documents };
+}
+
+function normalizeStore(raw) {
+  if (!raw || typeof raw !== 'object') return applyAutoStatuses(seedStore());
+  const s = {
+    companies: Array.isArray(raw.companies) ? raw.companies : [],
+    clients: Array.isArray(raw.clients) ? raw.clients : [],
+    products: Array.isArray(raw.products) ? raw.products : [],
+    documents: Array.isArray(raw.documents) ? raw.documents : [],
+    incoming: Array.isArray(raw.incoming) ? raw.incoming : [],
+    settings: raw.settings && typeof raw.settings === 'object'
+      ? { currency: 'EUR', defaultTemplate: 'classico', ...raw.settings }
+      : { currency: 'EUR', defaultTemplate: 'classico' },
+  };
+  if (s.settings.defaultCompanyId && !s.companies.some((c) => c.id === s.settings.defaultCompanyId)) {
+    s.settings.defaultCompanyId = s.companies[0] ? s.companies[0].id : '';
+  }
+  return applyAutoStatuses(s);
+}
+
+function validateBackupPayload(data) {
+  if (!data || typeof data !== 'object') return 'Invalid backup: not an object.';
+  const core = data.store || data;
+  if (!Array.isArray(core.companies)) return 'Invalid backup: missing companies array.';
+  if (core.clients != null && !Array.isArray(core.clients)) return 'Invalid backup: clients must be an array.';
+  if (core.documents != null && !Array.isArray(core.documents)) return 'Invalid backup: documents must be an array.';
+  if (data.files != null && (typeof data.files !== 'object' || Array.isArray(data.files))) return 'Invalid backup: files must be an object.';
+  return '';
+}
+
+function findDuplicateDocNumber(documents, doc, excludeId = '') {
+  const label = String(doc.number || formatDocNumber(doc.type, doc.seq, doc.year)).trim().toLowerCase();
+  if (!label) return null;
+  return (documents || []).find((d) => (
+    d.id !== excludeId
+    && d.companyId === doc.companyId
+    && String(d.number || formatDocNumber(d.type, d.seq, d.year)).trim().toLowerCase() === label
+  )) || null;
+}
+
+function companyDocCount(store, companyId) {
+  return (store.documents || []).filter((d) => d.companyId === companyId).length;
+}
+
+function clientDocCount(store, clientId) {
+  return (store.documents || []).filter((d) => d.clientId === clientId).length;
+}
+
+async function buildBackupBlob(store) {
+  const normalized = normalizeStore(store);
+  const fileKeys = collectFileKeys(normalized);
+  const files = {};
+  for (const key of fileKeys) {
+    try { const data = await FileStore.get(key); if (data) files[key] = data; } catch (e) { /* */ }
+  }
+  return JSON.stringify({ version: BACKUP_VERSION, exportedAt: Date.now(), store: normalized, files }, null, 2);
+}
+
+async function restoreBackupPayload(data) {
+  const err = validateBackupPayload(data);
+  if (err) throw new Error(err);
+  const normalized = normalizeStore(data.store || data);
+  const files = data.files && typeof data.files === 'object' ? data.files : {};
+  for (const [key, val] of Object.entries(files)) {
+    if (typeof val === 'string' && key.startsWith('fg_file_')) await FileStore.set(key, val);
+  }
+  await Store.set(STORE_KEY, normalized);
+  await purgeOrphanFiles(normalized);
+  return normalized;
+}
+
+async function initCloudSync(localStore) {
+  let s = localStore;
+  let { workspace, key } = getWorkspaceFromUrl();
+  if (!workspace && s.settings?.cloudWorkspace) {
+    workspace = s.settings.cloudWorkspace;
+    key = s.settings.cloudKey || '';
+  }
+  if (!workspace) {
+    workspace = newWorkspaceId();
+    try {
+      const claimed = await claimWorkspace(workspace);
+      workspace = claimed.workspace;
+      key = claimed.key;
+    } catch (e) {
+      return s;
+    }
+  }
+  setWorkspaceInUrl(workspace, key);
+  let cloudUpdatedAt = s.settings?.cloudUpdatedAt || 0;
+  try {
+    const cloud = await loadFromCloud(workspace, key);
+    if (cloud?.json) {
+      const data = JSON.parse(cloud.json);
+      const localTs = s.settings?.cloudUpdatedAt || 0;
+      if (cloud.updatedAt > localTs) {
+        s = await restoreBackupPayload(data);
+        cloudUpdatedAt = cloud.updatedAt;
+      }
+    }
+  } catch (e) { /* keep local copy */ }
+  s = normalizeStore({
+    ...s,
+    settings: { ...(s.settings || {}), cloudWorkspace: workspace, cloudKey: key, cloudUpdatedAt },
+  });
+  await Store.set(STORE_KEY, s);
+  return s;
+}
+
 function readFileAsDataURL(file) {
   return new Promise((resolve, reject) => { const r = new FileReader(); r.onload = () => resolve(r.result); r.onerror = () => reject(r.error || new Error('read failed')); r.readAsDataURL(file); });
 }
@@ -1845,12 +2181,19 @@ function EmptyState({ icon: Icon, title, sub, action }) {
 }
 
 // Document preview scaled to A4 (single source = buildDocumentHTML)
-function DocPreview({ html }) {
+function DocPreview({ html, stampTheme, onStampMove, interactiveStamp }) {
   const wrapRef = useRef(null);
   const frameRef = useRef(null);
+  const dragRef = useRef(null);
   const [scale, setScale] = useState(0.6);
   const [docH, setDocH] = useState(1123);
+  const [stampBox, setStampBox] = useState({ top: 0, left: 0, w: 794, h: 1123 });
   const A4W = 794;
+  const stampSrc = stampTheme && stampTheme.showStamp ? resolveStampImageSrc(stampTheme) : '';
+  const showDragStamp = interactiveStamp && stampSrc;
+  const stampXY = stampTheme ? getStampXY(stampTheme) : { x: 84, y: 88 };
+  const stampOpacity = stampTheme && stampTheme.stampOpacity != null ? stampTheme.stampOpacity : 0.85;
+
   useEffect(() => {
     const fit = () => { if (wrapRef.current) { const w = wrapRef.current.clientWidth; setScale(Math.min(1, Math.max(0.2, w / A4W))); } };
     fit();
@@ -1858,15 +2201,196 @@ function DocPreview({ html }) {
     const id = setTimeout(fit, 60);
     return () => { window.removeEventListener('resize', fit); clearTimeout(id); };
   }, []);
-  const onLoad = () => {
-    try { const d = frameRef.current.contentDocument; const h = Math.max(1123, d.body.scrollHeight + 24); setDocH(h); } catch (e) { /* noop */ }
+
+  const measureLayout = () => {
+    try {
+      const iframe = frameRef.current;
+      const doc = iframe?.contentDocument;
+      if (!iframe || !doc) return;
+      const page = doc.querySelector('.page') || doc.body;
+      setDocH(Math.max(1123, doc.body.scrollHeight + 24));
+      const w = page.offsetWidth || A4W;
+      const h = Math.round(w * (297 / 210));
+      setStampBox({
+        top: page.offsetTop || 0,
+        left: page.offsetLeft || 0,
+        w,
+        h,
+      });
+    } catch (e) { /* noop */ }
   };
+
+  useEffect(() => {
+    const id = setTimeout(measureLayout, 80);
+    return () => clearTimeout(id);
+  }, [html, scale]);
+
+  const onLoad = () => {
+    measureLayout();
+    setTimeout(measureLayout, 120);
+    setTimeout(measureLayout, 400);
+  };
+
+  const moveStampFromEvent = (e) => {
+    if (!onStampMove || !wrapRef.current) return;
+    const layer = wrapRef.current.querySelector('.preview-stamp-layer');
+    if (!layer) return;
+    const rect = layer.getBoundingClientRect();
+    if (!rect.width || !rect.height) return;
+    const x = clamp(((e.clientX - rect.left) / rect.width) * 100, 3, 97);
+    const y = clamp(((e.clientY - rect.top) / rect.height) * 100, 3, STAMP_MAX_Y);
+    onStampMove({ stampPosition: 'custom', stampPosX: Math.round(x * 10) / 10, stampPosY: Math.round(y * 10) / 10 });
+  };
+
+  const onStampPointerDown = (e) => {
+    if (!onStampMove) return;
+    e.preventDefault();
+    dragRef.current = true;
+    e.currentTarget.setPointerCapture(e.pointerId);
+    moveStampFromEvent(e);
+  };
+  const onStampPointerMove = (e) => {
+    if (!dragRef.current) return;
+    moveStampFromEvent(e);
+  };
+  const onStampPointerUp = (e) => {
+    dragRef.current = false;
+    try { e.currentTarget.releasePointerCapture(e.pointerId); } catch (err) { /* noop */ }
+  };
+
+  const frameW = A4W * scale;
+  const frameH = docH * scale;
+  const layerTop = stampBox.top * scale;
+  const layerLeft = stampBox.left * scale;
+  const layerW = stampBox.w * scale;
+  const layerH = stampBox.h * scale;
+
   return (
     <div className="preview-wrap" ref={wrapRef}>
-      <div className="preview-scaler" style={{ height: docH * scale }}>
+      <div className="preview-scaler" style={{ height: frameH, width: frameW, margin: '0 auto', position: 'relative' }}>
         <iframe ref={frameRef} title="Document preview" srcDoc={html} onLoad={onLoad}
-          style={{ width: A4W, height: docH, border: 'none', transform: `scale(${scale})`, transformOrigin: 'top left', background: '#fff' }} />
+          style={{ width: A4W, height: docH, border: 'none', transform: `scale(${scale})`, transformOrigin: 'top left', background: '#fff', display: 'block' }} />
+        {showDragStamp && (
+          <div className="preview-stamp-layer" style={{ position: 'absolute', top: layerTop, left: layerLeft, width: layerW, height: layerH, pointerEvents: 'none' }}>
+            <img
+              src={stampSrc}
+              alt=""
+              className="preview-stamp-handle"
+              draggable={false}
+              style={{
+                position: 'absolute',
+                left: `${stampXY.x}%`,
+                top: `${stampXY.y}%`,
+                transform: 'translate(-50%, -50%)',
+                width: `${(55 / 210) * 100}%`,
+                opacity: stampOpacity,
+                mixBlendMode: 'multiply',
+                pointerEvents: 'auto',
+                cursor: onStampMove ? 'grab' : 'default',
+                touchAction: 'none',
+              }}
+              onPointerDown={onStampPointerDown}
+              onPointerMove={onStampPointerMove}
+              onPointerUp={onStampPointerUp}
+              onPointerCancel={onStampPointerUp}
+            />
+          </div>
+        )}
       </div>
+      {showDragStamp && onStampMove && <p className="preview-stamp-hint">Drag the stamp on the preview to reposition it.</p>}
+    </div>
+  );
+}
+
+function DocumentStampBar({ theme, company, onChange, onLoadCompanyDefault, onSaveCompanyDefault }) {
+  const set = (sub) => onChange(sub);
+  const onUploadStamp = async (e) => {
+    const f = e.target.files && e.target.files[0]; if (!f) return;
+    const err = validateUploadFile(f, { mimes: ['image/jpeg', 'image/png', 'image/webp', 'image/gif', 'image/svg+xml'] });
+    if (err) return;
+    try {
+      const url = await fileToScaledDataURL(f, 360);
+      const safe = safeImageSrc(url) || url;
+      set({ showStamp: true, stampImage: safe, stampTemplate: '', stampPosition: 'custom', stampPosX: theme.stampPosX ?? 84, stampPosY: theme.stampPosY ?? 88 });
+    } catch (err) { /* noop */ }
+    e.target.value = '';
+  };
+  const companyHasStamp = company && (company.theme || {}).showStamp;
+
+  return (
+    <div className="doc-stamp-bar">
+      <div className="doc-stamp-bar-head">
+        <Toggle checked={!!theme.showStamp} onChange={(v) => set({ showStamp: v })} label="Stamp on this invoice" />
+        <div className="doc-stamp-bar-actions">
+          {companyHasStamp && (
+            <button type="button" className="link-btn" onClick={onLoadCompanyDefault}>Use company default</button>
+          )}
+          {onSaveCompanyDefault && (
+            <button type="button" className="link-btn" onClick={onSaveCompanyDefault}>Save as company default</button>
+          )}
+        </div>
+      </div>
+      {theme.showStamp && (
+        <>
+          <div className="stamp-preset-grid stamp-bar-grid">
+            <button type="button" className={cx('stamp-preset-btn', !theme.stampImage && !theme.stampTemplate && 'on')} onClick={() => set({ stampTemplate: '', stampImage: '', showStamp: false })}>
+              <span className="stamp-none">—</span>
+              <span className="stamp-preset-name">None</span>
+            </button>
+            {STAMP_PRESETS.map((preset) => (
+              <button key={preset.id} type="button" className={cx('stamp-preset-btn', !theme.stampImage && theme.stampTemplate === preset.id && 'on')} onClick={() => {
+                const xy = getStampXY({ ...theme, stampPosition: theme.stampPosition || 'bottom-right' });
+                set({ showStamp: true, stampTemplate: preset.id, stampImage: '', stampPosition: theme.stampPosition || 'bottom-right', stampPosX: xy.x, stampPosY: xy.y });
+              }}>
+                <img src={stampPresetToDataUrl(preset)} alt={preset.label} />
+                <span className="stamp-preset-name">{preset.label}</span>
+              </button>
+            ))}
+          </div>
+          <div className="stamp-upload-row">
+            <label className="btn btn-subtle btn-sm filebtn">
+              <Upload size={13} />
+              <span>Upload stamp</span>
+              <input type="file" accept="image/*" onChange={onUploadStamp} hidden />
+            </label>
+            {theme.stampImage && (
+              <>
+                <img src={theme.stampImage} className="stamp-custom-preview" alt="custom stamp" />
+                <Btn variant="ghost" size="sm" icon={Trash2} onClick={() => set({ stampImage: '', stampTemplate: '' })}>Remove</Btn>
+              </>
+            )}
+          </div>
+          <div className="stamp-controls stamp-bar-controls">
+            <Field label="Quick position">
+              <Segmented
+                value={theme.stampPosition === 'custom' ? 'custom' : (theme.stampPosition || 'bottom-right')}
+                onChange={(v) => {
+                  if (v === 'custom') {
+                    const xy = getStampXY(theme);
+                    set({ stampPosition: 'custom', stampPosX: xy.x, stampPosY: xy.y });
+                  } else {
+                    const xy = stampPresetXY(v);
+                    set({ stampPosition: v, stampPosX: xy.x, stampPosY: xy.y });
+                  }
+                }}
+                options={[
+                  { value: 'bottom-right', label: 'Bottom right' },
+                  { value: 'bottom-left', label: 'Bottom left' },
+                  { value: 'center', label: 'Center' },
+                  { value: 'custom', label: 'Custom' },
+                ]}
+              />
+            </Field>
+            <Field label="Opacity">
+              <div className="stamp-opacity-row">
+                <input type="range" min="0.2" max="1" step="0.05" value={theme.stampOpacity != null ? theme.stampOpacity : 0.85} onChange={(e) => set({ stampOpacity: parseFloat(e.target.value) })} />
+                <span className="mono stamp-opacity-val">{Math.round((theme.stampOpacity != null ? theme.stampOpacity : 0.85) * 100)}%</span>
+              </div>
+            </Field>
+          </div>
+          <p className="hint-block" style={{ margin: 0 }}>Stamp settings are saved with this invoice. Use &ldquo;Save as company default&rdquo; to apply the same stamp to future {company ? company.name : 'company'} documents.</p>
+        </>
+      )}
     </div>
   );
 }
@@ -1919,7 +2443,7 @@ function TypeTag({ type }) {
 function Dashboard({ store, onNew, onView, onGo }) {
   const docs = store.documents || [];
   const fatture = docs.filter((d) => d.type === 'fattura');
-  const daIncassare = sumByCurrency(fatture.filter((d) => ['emessa', 'inviata', 'scaduta'].includes(d.status)));
+  const daIncassare = sumByCurrency(fatture.filter((d) => ['emessa', 'inviata'].includes(d.status)));
   const incassato = sumByCurrency(fatture.filter((d) => d.status === 'pagata'));
   const scaduto = sumByCurrency(fatture.filter((d) => d.status === 'scaduta'));
   const recent = sortDocs(docs).slice(0, 7);
@@ -1995,13 +2519,17 @@ function StatusModal({ open, doc, onClose, onPick }) {
   );
 }
 
-function DocumentsList({ store, onNew, onEdit, onView, onDuplicate, onDelete, onStatus }) {
+function DocumentsList({ store, onNew, onEdit, onView, onDuplicate, onDelete, onStatus, defaultCompanyId }) {
   const [q, setQ] = useState('');
   const [fType, setFType] = useState('');
-  const [fCompany, setFCompany] = useState('');
+  const [fCompany, setFCompany] = useState(defaultCompanyId || '');
   const [fStatus, setFStatus] = useState('');
   const [statusFor, setStatusFor] = useState(null);
   const [delFor, setDelFor] = useState(null);
+
+  useEffect(() => {
+    if (defaultCompanyId && !fCompany) setFCompany(defaultCompanyId);
+  }, [defaultCompanyId]);
 
   const rows = useMemo(() => {
     const ql = q.trim().toLowerCase();
@@ -2100,7 +2628,7 @@ function DocumentViewer({ open, doc, store, onClose, onEdit }) {
 // ============================================================================
 //  EDITOR — draft construction helpers
 // ============================================================================
-function blankLine() { return { id: uid(), desc: '', qty: 1, um: 'pz', price: 0, iva: 22, discount: 0, note: '' }; }
+function blankLine() { return { id: uid(), desc: '', qty: 1, um: 'pcs', price: 0, iva: 22, discount: 0, note: '' }; }
 function freshDoc(store, type) {
   const s = store.settings || {};
   const companyId = (s.defaultCompanyId && companyById(store, s.defaultCompanyId)) ? s.defaultCompanyId : ((store.companies[0] && store.companies[0].id) || '');
@@ -2129,8 +2657,8 @@ function sampleDocForCompany(co) {
     date: todayISO(), dueDate: addDays(todayISO(), 30), validUntil: '', refDoc: '', currency: 'EUR',
     number: formatDocNumber('fattura', 42, y), seq: 42, year: y,
     lines: [
-      { id: 'l1', desc: 'Rolex Submariner Date ref. 126610LN', qty: 1, um: 'pz', price: 12800, iva: 22, discount: 0, note: 'Full set, 2024 warranty.' },
-      { id: 'l2', desc: 'Full movement service', qty: 1, um: 'nr', price: 350, iva: 22, discount: 0, note: '' },
+      { id: 'l1', desc: 'Rolex Submariner Date ref. 126610LN', qty: 1, um: 'pcs', price: 12800, iva: 22, discount: 0, note: 'Full set, 2024 warranty.' },
+      { id: 'l2', desc: 'Full movement service', qty: 1, um: 'pcs', price: 350, iva: 22, discount: 0, note: '' },
     ],
     notes: 'Thank you for your business.', causaleFiscale: '',
     cassa: { enabled: false, rate: 4, iva: 22 }, ritenuta: { enabled: false, rate: 20, base: 'imponibile' }, bollo: { enabled: false, amount: 2 },
@@ -2146,7 +2674,18 @@ function ThemeEditor({ value, onChange }) {
   const set = (sub) => onChange({ ...value, ...sub });
   const onUploadHtml = async (e) => {
     const f = e.target.files && e.target.files[0]; if (!f) return;
-    try { const txt = await f.text(); set({ customHTML: txt, template: 'custom' }); } catch (err) { /* noop */ }
+    try { const txt = sanitizeHTML(await f.text()); set({ customHTML: txt, template: 'custom' }); } catch (err) { /* noop */ }
+    e.target.value = '';
+  };
+  const onUploadStamp = async (e) => {
+    const f = e.target.files && e.target.files[0]; if (!f) return;
+    const err = validateUploadFile(f, { mimes: ['image/jpeg', 'image/png', 'image/webp', 'image/gif', 'image/svg+xml'] });
+    if (err) return;
+    try {
+      const url = await fileToScaledDataURL(f, 360);
+      const safe = safeImageSrc(url) || url;
+      set({ stampImage: safe, stampTemplate: '' });
+    } catch (err) { /* noop */ }
     e.target.value = '';
   };
   return (
@@ -2162,7 +2701,71 @@ function ThemeEditor({ value, onChange }) {
         <Toggle checked={value.showPaymentBox} onChange={(v) => set({ showPaymentBox: v })} label="Payment box" />
         <Toggle checked={value.showNotes} onChange={(v) => set({ showNotes: v })} label="Footer notes" />
         <Toggle checked={value.showSignature} onChange={(v) => set({ showSignature: v })} label="Signature space" />
+        <Toggle checked={!!value.showStamp} onChange={(v) => set({ showStamp: v })} label="Stamp overlay" />
       </div>
+
+      {value.showStamp && (
+        <div className="stamp-editor full">
+          <div className="stamp-editor-label">Pre-made stamps</div>
+          <div className="stamp-preset-grid">
+            <button type="button" className={cx('stamp-preset-btn', !value.stampImage && !value.stampTemplate && 'on')} onClick={() => set({ stampTemplate: '', stampImage: '' })}>
+              <span className="stamp-none">—</span>
+              <span className="stamp-preset-name">None</span>
+            </button>
+            {STAMP_PRESETS.map((preset) => (
+              <button key={preset.id} type="button" className={cx('stamp-preset-btn', !value.stampImage && value.stampTemplate === preset.id && 'on')} onClick={() => {
+                const xy = getStampXY({ ...value, stampPosition: value.stampPosition || 'bottom-right' });
+                set({ stampTemplate: preset.id, stampImage: '', stampPosition: value.stampPosition || 'bottom-right', stampPosX: xy.x, stampPosY: xy.y });
+              }}>
+                <img src={stampPresetToDataUrl(preset)} alt={preset.label} />
+                <span className="stamp-preset-name">{preset.label}</span>
+              </button>
+            ))}
+          </div>
+          <div className="stamp-upload-row">
+            <label className="btn btn-subtle btn-sm filebtn">
+              <Upload size={13} />
+              <span>Upload custom stamp</span>
+              <input type="file" accept="image/*" onChange={onUploadStamp} hidden />
+            </label>
+            {value.stampImage && (
+              <>
+                <img src={value.stampImage} className="stamp-custom-preview" alt="custom stamp" />
+                <Btn variant="ghost" size="sm" icon={Trash2} onClick={() => set({ stampImage: '', stampTemplate: '' })}>Remove</Btn>
+              </>
+            )}
+            <span className="hint">PNG with transparency recommended</span>
+          </div>
+          <div className="stamp-controls">
+            <Field label="Position">
+              <Segmented
+                value={value.stampPosition === 'custom' ? 'custom' : (value.stampPosition || 'bottom-right')}
+                onChange={(v) => {
+                  if (v === 'custom') {
+                    const xy = getStampXY(value);
+                    set({ stampPosition: 'custom', stampPosX: xy.x, stampPosY: xy.y });
+                  } else {
+                    const xy = stampPresetXY(v);
+                    set({ stampPosition: v, stampPosX: xy.x, stampPosY: xy.y });
+                  }
+                }}
+                options={[
+                  { value: 'bottom-right', label: 'Bottom right' },
+                  { value: 'bottom-left', label: 'Bottom left' },
+                  { value: 'center', label: 'Center' },
+                  { value: 'custom', label: 'Custom' },
+                ]}
+              />
+            </Field>
+            <Field label="Opacity">
+              <div className="stamp-opacity-row">
+                <input type="range" min="0.2" max="1" step="0.05" value={value.stampOpacity != null ? value.stampOpacity : 0.85} onChange={(e) => set({ stampOpacity: parseFloat(e.target.value) })} />
+                <span className="mono stamp-opacity-val">{Math.round((value.stampOpacity != null ? value.stampOpacity : 0.85) * 100)}%</span>
+              </div>
+            </Field>
+          </div>
+        </div>
+      )}
 
       {value.template === 'custom' && (
         <div className="custom-tpl full">
@@ -2228,6 +2831,7 @@ function ThemeEditor({ value, onChange }) {
                   <li><code>{'{{{items_table}}}'}</code> · <code>{'{{{totals_block}}}'}</code></li>
                   <li><code>{'{{{company_block}}}'}</code> · <code>{'{{{client_block}}}'}</code></li>
                   <li><code>{'{{{logo}}}'}</code> · <code>{'{{{payment_block}}}'}</code> · <code>{'{{{notes_block}}}'}</code></li>
+                  <li><code>{'{{{stamp_block}}}'}</code> <span className="td">stamp overlay (when enabled)</span></li>
                   <li className="td">triple braces = raw HTML, not escaped</li>
                 </ul>
               </div>
@@ -2327,7 +2931,7 @@ function QuickClientModal({ open, onClose, onCreate }) {
 // ============================================================================
 //  DOCUMENT EDITOR
 // ============================================================================
-function DocumentEditor({ store, editingId, draftType, onSave, onCancel, onUpsertClient, onAddClientFile, onDeleteClientFile }) {
+function DocumentEditor({ store, editingId, draftType, onSave, onCancel, onUpsertClient, onAddClientFile, onDeleteClientFile, onUpdateCompany, onNotify }) {
   const existing = editingId ? (store.documents || []).find((d) => d.id === editingId) : null;
   const [draft, setDraft] = useState(() => (existing ? JSON.parse(JSON.stringify(existing)) : freshDoc(store, draftType || 'fattura')));
   const [numTouched, setNumTouched] = useState(!!existing);
@@ -2347,22 +2951,46 @@ function DocumentEditor({ store, editingId, draftType, onSave, onCancel, onUpser
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [draft.companyId, draft.type, draft.date, numTouched]);
 
+  const patchTheme = (sub) => patch('themeOverride', { ...(draft.themeOverride || {}), ...sub });
+
   const company = companyById(store, draft.companyId);
   const client = clientById(store, draft.clientId);
   const meta = DOC_TYPES[draft.type] || DOC_TYPES.fattura;
   const totals = meta.money ? computeTotals(draft) : null;
   const themeVal = effectiveTheme(company, draft);
   const html = useMemo(() => buildDocumentHTML(draft, company, client, store.settings), [draft, company, client, store.settings]);
+  const previewHtml = useMemo(() => {
+    const stampActive = themeVal.showStamp && resolveStampImageSrc(themeVal);
+    return buildDocumentHTML(draft, company, client, store.settings, { omitStamp: stampActive });
+  }, [draft, company, client, store.settings, themeVal.showStamp, themeVal.stampTemplate, themeVal.stampImage, themeVal.stampPosition, themeVal.stampPosX, themeVal.stampPosY]);
+
+  const loadCompanyStamp = () => {
+    if (!company) return;
+    const coTheme = { ...DEFAULT_THEME, ...(company.theme || {}) };
+    patchTheme(pickStampTheme(coTheme));
+  };
+  const saveCompanyStamp = () => {
+    if (!company || !onUpdateCompany) return;
+    onUpdateCompany({ ...company, theme: { ...DEFAULT_THEME, ...(company.theme || {}), ...pickStampTheme(themeVal) } });
+    if (onNotify) onNotify(`Stamp saved as default for ${company.name}.`, 'warn');
+  };
 
   const setLines = (lines) => patch('lines', lines);
   const addLine = () => setLines([...(draft.lines || []), blankLine()]);
-  const addProduct = (p) => setLines([...(draft.lines || []), { id: uid(), desc: p.desc, qty: 1, um: p.um || 'pz', price: p.price || 0, iva: p.iva == null ? 22 : p.iva, discount: 0, note: '' }]);
+  const addProduct = (p) => setLines([...(draft.lines || []), { id: uid(), desc: p.desc, qty: 1, um: p.um || 'pcs', price: p.price || 0, iva: p.iva == null ? 22 : p.iva, discount: 0, note: '' }]);
   const updLine = (id, sub) => setLines((draft.lines || []).map((l) => (l.id === id ? { ...l, ...sub } : l)));
   const delLine = (id) => setLines((draft.lines || []).filter((l) => l.id !== id));
   const moveLine = (id, dir) => { const arr = [...(draft.lines || [])]; const i = arr.findIndex((l) => l.id === id); const j = i + dir; if (i < 0 || j < 0 || j >= arr.length) return; const tmp = arr[i]; arr[i] = arr[j]; arr[j] = tmp; setLines(arr); };
 
   const regenNumber = () => { const y = yearOf(draft.date); const seq = nextSeq((store.documents || []).filter((d) => d.id !== draft.id), draft.companyId, draft.type, y); setNumTouched(true); setDraft((d) => ({ ...d, seq, year: y, number: formatDocNumber(d.type, seq, y) })); };
-  const save = () => { const d = { ...draft }; if (!d.number) d.number = formatDocNumber(d.type, d.seq, d.year); const ps = parseInt(d.seq); if (!isNaN(ps)) d.seq = ps; onSave(d); };
+  const save = () => {
+    const d = { ...draft };
+    if (!d.number) d.number = formatDocNumber(d.type, d.seq, d.year);
+    const ps = parseInt(d.seq); if (!isNaN(ps)) d.seq = ps;
+    const dup = findDuplicateDocNumber(store.documents, d, d.id);
+    if (dup) { if (onNotify) onNotify(`Document number "${docNumberLabel(d)}" is already used by another document for this company.`, 'error'); return; }
+    onSave(d);
+  };
 
   const showForm = !isMobile || tab === 'form';
   const showPrev = !isMobile || tab === 'preview';
@@ -2401,6 +3029,13 @@ function DocumentEditor({ store, editingId, draftType, onSave, onCancel, onUpser
                 <Field label="Subject / heading" full hint="Optional title line shown on the document"><TextInput value={draft.subject || ''} onChange={(v) => patch('subject', v)} placeholder="e.g. Rolex Daytona | Cartier" /></Field>
                 <Field label="Contact person"><TextInput value={draft.contactPerson || ''} onChange={(v) => patch('contactPerson', v)} /></Field>
               </div>
+              <DocumentStampBar
+                theme={themeVal}
+                company={company}
+                onChange={patchTheme}
+                onLoadCompanyDefault={loadCompanyStamp}
+                onSaveCompanyDefault={company && onUpdateCompany ? saveCompanyStamp : null}
+              />
             </div>
 
             {draft.type === 'acquisto' && (
@@ -2532,7 +3167,7 @@ function DocumentEditor({ store, editingId, draftType, onSave, onCancel, onUpser
               <Btn variant="subtle" size="sm" icon={Printer} onClick={() => printHTML(html)}>Print / PDF</Btn>
               <Btn variant="subtle" size="sm" icon={FileDown} onClick={() => downloadBlob(`${docNumberLabel(draft).replace(/[^\w\-]+/g, '_')}.html`, html)}>HTML</Btn>
             </div>
-            <DocPreview html={html} />
+            <DocPreview html={previewHtml} stampTheme={themeVal} interactiveStamp onStampMove={patchTheme} />
           </div>
         )}
       </div>
@@ -2546,8 +3181,9 @@ function DocumentEditor({ store, editingId, draftType, onSave, onCancel, onUpser
 //  COMPANIES
 // ============================================================================
 function blankCompany() { return { id: uid(), name: '', forma: '', regime: 'Standard', piva: '', cf: '', address: '', cap: '', city: '', prov: '', country: '', email: '', phone: '', pec: '', sdi: '', rea: '', capitale: '', bank: '', iban: '', swift: '', bankInfo: '', currency: 'EUR', causaleFiscale: '', acqSellerDecl: '', acqBuyerNote: '', acqVatNote: '', footerText: '', logo: '', theme: { ...DEFAULT_THEME } }; }
-function CompaniesView({ store, onNew, onEdit, onDelete, onSetDefault }) {
+function CompaniesView({ store, onNew, onEdit, onDelete, onSetDefault, onNotify }) {
   const [delFor, setDelFor] = useState(null);
+  const docCount = delFor ? companyDocCount(store, delFor.id) : 0;
   return (
     <div className="view">
       <ViewHead title="Companies" sub={`${store.companies.length} issuing companies`} actions={<Btn icon={Plus} onClick={onNew}>New company</Btn>} />
@@ -2561,7 +3197,7 @@ function CompaniesView({ store, onNew, onEdit, onDelete, onSetDefault }) {
             return (
               <div className="ent-card" key={co.id}>
                 <div className="ent-top">
-                  <div className="ent-logo" style={{ borderColor: t.accent }}>{co.logo ? <img src={co.logo} alt="" /> : <Building2 size={20} style={{ color: t.accent }} />}</div>
+                  <div className="ent-logo" style={{ borderColor: t.accent }}>{co.logo && safeImageSrc(co.logo) ? <img src={safeImageSrc(co.logo)} alt="" /> : <Building2 size={20} style={{ color: t.accent }} />}</div>
                   <div className="ent-main">
                     <div className="ent-name">{co.name}{co.forma && <span className="ent-forma">{co.forma}</span>}</div>
                     <div className="ent-sub">{[co.city, co.regime].filter(Boolean).join(' · ')}</div>
@@ -2584,8 +3220,10 @@ function CompaniesView({ store, onNew, onEdit, onDelete, onSetDefault }) {
         </div>
       )}
       <Modal open={!!delFor} onClose={() => setDelFor(null)} title="Delete company"
-        footer={<><Btn variant="ghost" onClick={() => setDelFor(null)}>Cancel</Btn><Btn variant="danger" icon={Trash2} onClick={() => { onDelete(delFor); setDelFor(null); }}>Delete</Btn></>}>
-        {delFor && <p>Delete <strong>{delFor.name}</strong>? Documents already issued will be kept.</p>}
+        footer={<><Btn variant="ghost" onClick={() => setDelFor(null)}>Cancel</Btn><Btn variant="danger" icon={Trash2} disabled={docCount > 0} onClick={() => { if (docCount > 0) { if (onNotify) onNotify(`Cannot delete: ${docCount} document(s) still reference this company.`, 'error'); return; } onDelete(delFor); setDelFor(null); }}>Delete</Btn></>}>
+        {delFor && (docCount > 0
+          ? <p><strong>{delFor.name}</strong> cannot be deleted because {docCount} document(s) still reference it. Reassign or delete those documents first.</p>
+          : <p>Delete <strong>{delFor.name}</strong>? This cannot be undone.</p>)}
       </Modal>
     </div>
   );
@@ -2597,7 +3235,13 @@ function CompanyEditor({ store, editingId, onSave, onCancel }) {
   const [tab, setTab] = useState('form');
   const isMobile = useMedia(980);
   const set = (k, v) => setCo((o) => ({ ...o, [k]: v }));
-  const onLogo = async (e) => { const f = e.target.files && e.target.files[0]; if (!f) return; try { const url = await fileToScaledDataURL(f, 440); set('logo', url); } catch (err) { /* noop */ } e.target.value = ''; };
+  const onLogo = async (e) => {
+    const f = e.target.files && e.target.files[0]; if (!f) return;
+    const err = validateUploadFile(f, { mimes: ['image/jpeg', 'image/png', 'image/webp', 'image/gif', 'image/svg+xml'] });
+    if (err) return;
+    try { const url = await fileToScaledDataURL(f, 440); set('logo', safeImageSrc(url) || url); } catch (err) { /* noop */ }
+    e.target.value = '';
+  };
   const previewDoc = useMemo(() => sampleDocForCompany(co), [co]);
   const html = useMemo(() => buildDocumentHTML(previewDoc, co, SAMPLE_CLIENT, store.settings), [previewDoc, co, store.settings]);
   const save = () => { if (!co.name.trim()) return; onSave(co); };
@@ -2691,11 +3335,12 @@ function ClientFormModal({ open, client, onClose, onSave }) {
     </Modal>
   );
 }
-function ClientsView({ store, onSave, onDelete, onAddFile, onDeleteFile }) {
+function ClientsView({ store, onSave, onDelete, onAddFile, onDeleteFile, onNotify }) {
   const [editing, setEditing] = useState(null); // client object or 'new'
   const [delFor, setDelFor] = useState(null);
   const [docsFor, setDocsFor] = useState(null);
   const open = editing !== null;
+  const linkedDocs = delFor ? clientDocCount(store, delFor.id) : 0;
   return (
     <div className="view">
       <ViewHead title="Clients" sub={`${store.clients.length} records`} actions={<Btn icon={Plus} onClick={() => setEditing('new')}>New client</Btn>} />
@@ -2723,8 +3368,10 @@ function ClientsView({ store, onSave, onDelete, onAddFile, onDeleteFile }) {
       <ClientFormModal open={open} client={editing === 'new' ? null : editing} onClose={() => setEditing(null)} onSave={(c) => { onSave(c); setEditing(null); }} />
       <ClientDocsModal open={!!docsFor} client={docsFor ? store.clients.find((x) => x.id === docsFor) : null} onClose={() => setDocsFor(null)} onAdd={onAddFile} onDelete={onDeleteFile} />
       <Modal open={!!delFor} onClose={() => setDelFor(null)} title="Delete client"
-        footer={<><Btn variant="ghost" onClick={() => setDelFor(null)}>Cancel</Btn><Btn variant="danger" icon={Trash2} onClick={() => { onDelete(delFor); setDelFor(null); }}>Delete</Btn></>}>
-        {delFor && <p>Delete <strong>{delFor.name}</strong>?</p>}
+        footer={<><Btn variant="ghost" onClick={() => setDelFor(null)}>Cancel</Btn><Btn variant="danger" icon={Trash2} disabled={linkedDocs > 0} onClick={() => { if (linkedDocs > 0) { if (onNotify) onNotify(`Cannot delete: ${linkedDocs} document(s) reference this client.`, 'error'); return; } onDelete(delFor); setDelFor(null); }}>Delete</Btn></>}>
+        {delFor && (linkedDocs > 0
+          ? <p><strong>{delFor.name}</strong> cannot be deleted because {linkedDocs} document(s) reference them.</p>
+          : <p>Delete <strong>{delFor.name}</strong> and any stored attachment files?</p>)}
       </Modal>
     </div>
   );
@@ -2733,7 +3380,7 @@ function ClientsView({ store, onSave, onDelete, onAddFile, onDeleteFile }) {
 // ============================================================================
 //  CATALOG (PRODUCTS)
 // ============================================================================
-function newProduct() { return { id: uid(), desc: '', um: 'pz', price: 0, iva: 22 }; }
+function newProduct() { return { id: uid(), desc: '', um: 'pcs', price: 0, iva: 22 }; }
 function ProductFormModal({ open, product, onClose, onSave }) {
   const [p, setP] = useState(() => (product ? { ...product } : newProduct()));
   useEffect(() => { if (open) setP(product ? { ...product } : newProduct()); }, [open, product]);
@@ -2790,15 +3437,29 @@ function ProductsView({ store, onSave, onDelete }) {
 // ============================================================================
 //  SETTINGS
 // ============================================================================
-function SettingsView({ store, onUpdateSettings, onExport, onImport, onReset }) {
+function SettingsView({ store, onUpdateSettings, onExport, onImport, onReset, onNotify, cloudStatus, syncLink, onCopySyncLink }) {
   const s = store.settings || {};
   const [resetOpen, setResetOpen] = useState(false);
+  const [exporting, setExporting] = useState(false);
+  const [copied, setCopied] = useState(false);
   const fileRef = useRef(null);
   const onFile = (e) => {
     const f = e.target.files && e.target.files[0]; if (!f) return;
     const r = new FileReader();
-    r.onload = () => { try { const data = JSON.parse(r.result); onImport(data); } catch (err) { alert('Invalid file: unable to read the backup.'); } };
+    r.onload = () => {
+      try {
+        const data = JSON.parse(r.result);
+        onImport(data);
+      } catch (err) {
+        if (onNotify) onNotify('Invalid file: unable to read the backup.', 'error');
+      }
+    };
     r.readAsText(f); e.target.value = '';
+  };
+  const doExport = async () => {
+    setExporting(true);
+    try { await onExport(); } catch (e) { if (onNotify) onNotify('Export failed.', 'error'); }
+    setExporting(false);
   };
   return (
     <div className="view">
@@ -2823,10 +3484,33 @@ function SettingsView({ store, onUpdateSettings, onExport, onImport, onReset }) 
         </div>
       </div>
       <div className="panel">
+        <div className="panel-title sec">Cloud sync</div>
+        <p className="hint-block">Your data (companies, stamps, documents, attachments) is saved to the cloud automatically. Open the same link in any browser to access everything.</p>
+        {syncLink ? (
+          <div className="form-grid">
+            <Field label="Your sync link" full hint="Bookmark this link or open it on another device. Keep it private — anyone with the link can access your data.">
+              <div style={{ display: 'flex', gap: 8, alignItems: 'stretch', flexWrap: 'wrap' }}>
+                <input className="inp mono" readOnly value={syncLink} style={{ flex: 1, minWidth: 200, fontSize: 11.5 }} onFocus={(e) => e.target.select()} />
+                <Btn variant="subtle" icon={copied ? Check : Link2} onClick={() => { onCopySyncLink(); setCopied(true); setTimeout(() => setCopied(false), 2000); }}>{copied ? 'Copied' : 'Copy link'}</Btn>
+              </div>
+            </Field>
+            <Field label="Sync status" full>
+              <span className="dim" style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                <Cloud size={14} />
+                {cloudStatus === 'saving' ? 'Saving to cloud…' : cloudStatus === 'saved' ? 'Saved to cloud' : cloudStatus === 'error' ? 'Cloud save failed — data kept locally' : 'Ready'}
+                {s.cloudUpdatedAt ? ` · Last saved ${dateFmt(new Date(s.cloudUpdatedAt).toISOString().slice(0, 10))}` : ''}
+              </span>
+            </Field>
+          </div>
+        ) : (
+          <p className="dim">Cloud sync is initializing…</p>
+        )}
+      </div>
+      <div className="panel">
         <div className="panel-title sec">Data management</div>
-        <p className="hint-block">Data is saved locally on your device. Export a backup or restore the sample data.</p>
+        <p className="hint-block">Data is also saved locally on your device. Export includes inbox files, stamps, and client attachments.</p>
         <div className="data-actions">
-          <Btn variant="subtle" icon={Download} onClick={onExport}>Export backup (JSON)</Btn>
+          <Btn variant="subtle" icon={Download} onClick={doExport} disabled={exporting}>{exporting ? 'Exporting…' : 'Export backup (JSON)'}</Btn>
           <Btn variant="subtle" icon={Upload} onClick={() => fileRef.current && fileRef.current.click()}>Import backup</Btn>
           <input ref={fileRef} type="file" accept="application/json,.json" onChange={onFile} hidden />
           <Btn variant="danger" icon={AlertTriangle} onClick={() => setResetOpen(true)}>Restore sample data</Btn>
@@ -2882,6 +3566,11 @@ const APP_CSS = `
 .fg.boot{display:grid;place-items:center;}
 .boot-card{display:flex;flex-direction:column;align-items:center;gap:16px;color:var(--ink-3);font-size:14px;}
 .boot-card .brand-mark{width:52px;height:52px;border-radius:16px;}
+
+.app-notice{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:10px 14px;margin:0 0 12px;border-radius:10px;border:1px solid var(--line-2);background:var(--bg-2);font-size:13px;color:var(--ink-2);}
+.app-notice.err{border-color:rgba(224,85,107,.45);background:rgba(224,85,107,.12);color:#f0a8b4;}
+.app-notice.warn{border-color:rgba(216,162,74,.45);background:rgba(216,162,74,.12);color:#e8c98a;}
+.app-notice-x{background:none;border:none;color:inherit;opacity:.7;padding:4px;cursor:pointer;display:grid;place-items:center;}
 
 /* ---------- layout ---------- */
 .fg.app{display:flex;align-items:stretch;}
@@ -3248,6 +3937,29 @@ const APP_CSS = `
 .token-ref .td{color:var(--ink-4);}
 .toggle-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:13px;padding-top:4px;}
 .toggle-grid.full{grid-column:1/-1;}
+.stamp-editor{grid-column:1/-1;display:flex;flex-direction:column;gap:12px;border-top:1px solid var(--line);padding-top:14px;margin-top:2px;}
+.stamp-editor-label{font-size:11px;font-weight:600;color:var(--ink-3);text-transform:uppercase;letter-spacing:.1em;}
+.stamp-preset-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;}
+.stamp-preset-btn{background:var(--bg-2);border:1.5px solid var(--line);border-radius:var(--radius-sm);padding:8px 6px 6px;display:flex;flex-direction:column;align-items:center;gap:5px;cursor:pointer;transition:border-color .15s,background .15s;}
+.stamp-preset-btn:hover{border-color:var(--line-2);background:var(--bg-4);}
+.stamp-preset-btn.on{border-color:var(--gold);background:var(--gold-soft);}
+.stamp-preset-btn img{width:44px;height:44px;object-fit:contain;}
+.stamp-none{width:44px;height:44px;display:grid;place-items:center;font-size:20px;color:var(--ink-4);}
+.stamp-preset-name{font-size:10px;color:var(--ink-3);white-space:nowrap;}
+.stamp-preset-btn.on .stamp-preset-name{color:var(--gold-2);}
+.stamp-upload-row{display:flex;flex-wrap:wrap;align-items:center;gap:10px;}
+.stamp-custom-preview{height:48px;width:auto;max-width:80px;object-fit:contain;border-radius:6px;border:1px solid var(--line);background:#fff;padding:4px;}
+.stamp-controls{display:flex;flex-direction:column;gap:12px;}
+.stamp-opacity-row{display:flex;align-items:center;gap:10px;}
+.stamp-opacity-row input[type=range]{flex:1;accent-color:var(--gold);}
+.stamp-opacity-val{min-width:36px;text-align:right;font-size:12px;color:var(--ink-2);}
+.doc-stamp-bar{margin-top:14px;padding-top:14px;border-top:1px solid var(--line);display:flex;flex-direction:column;gap:12px;}
+.doc-stamp-bar-head{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:10px;}
+.doc-stamp-bar-actions{display:flex;flex-wrap:wrap;gap:12px;}
+.stamp-bar-grid{grid-template-columns:repeat(auto-fill,minmax(58px,1fr));}
+.stamp-bar-controls{grid-template-columns:1fr;}
+.preview-stamp-hint{margin:8px 0 0;font-size:11px;color:var(--ink-4);text-align:center;}
+.preview-stamp-handle:active{cursor:grabbing !important;}
 
 /* ---------- settings ---------- */
 .data-actions{display:flex;gap:10px;flex-wrap:wrap;}
@@ -3307,6 +4019,16 @@ const NAV = [
   { id: 'impostazioni', label: 'Settings', icon: SettingsIcon },
 ];
 
+function AppNotice({ notice, onDismiss }) {
+  if (!notice) return null;
+  return (
+    <div className={cx('app-notice', notice.type === 'error' && 'err', notice.type === 'warn' && 'warn')}>
+      <span>{notice.text}</span>
+      <button type="button" className="app-notice-x" onClick={onDismiss} aria-label="Dismiss"><X size={14} /></button>
+    </div>
+  );
+}
+
 const INBOX_CATEGORIES = ['Purchase invoice', 'Expense', 'Service', 'Customs / duty', 'Shipping', 'Commission', 'Other'];
 const CUR_SYM = { EUR: '\u20ac', USD: 'US$', GBP: '\u00a3', CHF: 'CHF', AED: 'AED', HKD: 'HK$' };
 
@@ -3359,7 +4081,12 @@ function IncomingEditor({ open, state, store, onClose, onAdd, onUpdate }) {
   const fileRef = useRef(null);
   useEffect(() => { if (open) { setF(mk()); setFile(seedFile); setWarn(seedFile && seedFile.size > 4 * 1024 * 1024 ? 'Large file (>4 MB) may not be saved permanently.' : ''); } }, [open]);
   const set = (k, v) => setF((o) => ({ ...o, [k]: v }));
-  const onReplace = (e) => { const x = e.target.files && e.target.files[0]; e.target.value = ''; if (!x) return; setFile(x); setF((o) => ({ ...o, fileName: x.name, fileType: x.type, fileSize: x.size })); setWarn(x.size > 4 * 1024 * 1024 ? 'Large file (>4 MB) may not be saved permanently.' : ''); };
+  const onReplace = (e) => {
+    const x = e.target.files && e.target.files[0]; e.target.value = ''; if (!x) return;
+    const err = validateUploadFile(x);
+    if (err) { setWarn(err); return; }
+    setFile(x); setF((o) => ({ ...o, fileName: x.name, fileType: x.type, fileSize: x.size })); setWarn(x.size > 4 * 1024 * 1024 ? 'Large file (>4 MB) may not be saved permanently.' : '');
+  };
   const save = () => { const meta = { ...f, amount: f.amount === '' ? '' : num(f.amount) }; if (existing) onUpdate(meta, file); else onAdd(meta, file); };
   const sym = CUR_SYM[f.currency] || f.currency;
   return (
@@ -3388,7 +4115,7 @@ function IncomingEditor({ open, state, store, onClose, onAdd, onUpdate }) {
   );
 }
 
-function IncomingView({ store, onAdd, onUpdate, onDelete }) {
+function IncomingView({ store, onAdd, onUpdate, onDelete, onNotify }) {
   const companies = store.companies || [];
   const items = store.incoming || [];
   const [coFilter, setCoFilter] = useState('all');
@@ -3403,7 +4130,13 @@ function IncomingView({ store, onAdd, onUpdate, onDelete }) {
     .filter((r) => { if (!q) return true; const t = [r.supplier, r.docNumber, r.fileName, r.category, coName(r.companyId)].filter(Boolean).join(' ').toLowerCase(); return t.indexOf(q.toLowerCase()) >= 0; })
     .sort((a, b) => (b.date || '').localeCompare(a.date || ''));
   const sums = {}; filtered.forEach((r) => { const c = r.currency || 'EUR'; const v = parseFloat(r.amount); if (isFinite(v)) sums[c] = (sums[c] || 0) + v; });
-  const onPick = (e) => { const x = e.target.files && e.target.files[0]; e.target.value = ''; if (!x) return; setEditor({ file: x }); };
+  const onPick = (e) => {
+    const x = e.target.files && e.target.files[0]; e.target.value = '';
+    if (!x) return;
+    const err = validateUploadFile(x);
+    if (err) { if (onNotify) onNotify(err, 'error'); return; }
+    setEditor({ file: x });
+  };
   return (
     <div className="view">
       <ViewHead title="Inbox" sub="Invoices and purchase documents you received, filed per company for your accounting." actions={<Btn icon={Upload} onClick={() => fileRef.current && fileRef.current.click()}>Upload PDF</Btn>} />
@@ -3464,7 +4197,13 @@ function ClientDocsModal({ open, client, onClose, onAdd, onDelete }) {
   const [delId, setDelId] = useState(null);
   const fileRef = useRef(null);
   const atts = (client && client.attachments) || [];
-  const onPick = (e) => { const x = e.target.files && e.target.files[0]; e.target.value = ''; if (!x || !client) return; onAdd(client.id, { category: cat, label: '' }, x); };
+  const onPick = (e) => {
+    const x = e.target.files && e.target.files[0]; e.target.value = '';
+    if (!x || !client) return;
+    const err = validateUploadFile(x);
+    if (err) return;
+    onAdd(client.id, { category: cat, label: '' }, x);
+  };
   return (
     <Modal open={open} onClose={onClose} wide title={client ? ('Documents \u2014 ' + client.name) : 'Documents'}
       footer={<Btn variant="ghost" onClick={onClose}>Close</Btn>}>
@@ -3504,13 +4243,73 @@ function ClientDocsModal({ open, client, onClose, onAdd, onDelete }) {
 
 export default function App() {
   const [store, setStore] = useState(null);
+  const storeRef = useRef(null);
+  const [notice, setNotice] = useState(null);
   const [view, setView] = useState('dashboard');
-  const [docEditor, setDocEditor] = useState(null);       // { id } | { draftType } | null
-  const [companyEditor, setCompanyEditor] = useState(null); // { id } | {} | null
+  const [docEditor, setDocEditor] = useState(null);
+  const [companyEditor, setCompanyEditor] = useState(null);
   const [viewerDoc, setViewerDoc] = useState(null);
   const [switchOpen, setSwitchOpen] = useState(false);
   const [drawerOpen, setDrawerOpen] = useState(false);
+  const [cloudStatus, setCloudStatus] = useState('idle');
+  const cloudTimerRef = useRef(null);
   const isMobile = useMedia(900);
+
+  const syncLink = useMemo(() => {
+    const ws = store?.settings?.cloudWorkspace;
+    const key = store?.settings?.cloudKey;
+    return ws && key ? buildSyncLink(ws, key) : '';
+  }, [store?.settings?.cloudWorkspace, store?.settings?.cloudKey]);
+
+  const scheduleCloudSave = useCallback((nextStore) => {
+    const ws = nextStore?.settings?.cloudWorkspace;
+    const key = nextStore?.settings?.cloudKey;
+    if (!ws || !key) return;
+    clearTimeout(cloudTimerRef.current);
+    setCloudStatus('saving');
+    cloudTimerRef.current = setTimeout(async () => {
+      try {
+        const json = await buildBackupBlob(nextStore);
+        const updatedAt = await saveToCloud(ws, key, json);
+        const patched = normalizeStore({
+          ...storeRef.current,
+          settings: { ...(storeRef.current?.settings || {}), cloudUpdatedAt: updatedAt },
+        });
+        storeRef.current = patched;
+        setStore(patched);
+        await Store.set(STORE_KEY, patched);
+        setCloudStatus('saved');
+      } catch (e) {
+        setCloudStatus('error');
+      }
+    }, 1200);
+  }, []);
+
+  const copySyncLink = useCallback(() => {
+    if (!syncLink) return;
+    navigator.clipboard?.writeText(syncLink).catch(() => {
+      const ta = document.createElement('textarea');
+      ta.value = syncLink;
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand('copy');
+      document.body.removeChild(ta);
+    });
+  }, [syncLink]);
+
+  const notify = (text, type = 'warn') => setNotice({ text, type });
+
+  const persist = async (updater) => {
+    const prev = storeRef.current;
+    if (!prev) return null;
+    const next = normalizeStore(typeof updater === 'function' ? updater(prev) : updater);
+    storeRef.current = next;
+    setStore(next);
+    const ok = await Store.set(STORE_KEY, next);
+    if (!ok) notify('Could not save to disk (storage full or unavailable). Changes are kept in memory until you reload.', 'error');
+    scheduleCloudSave(next);
+    return next;
+  };
 
   useEffect(() => {
     let alive = true;
@@ -3521,14 +4320,28 @@ export default function App() {
         s = { ...s, documents: [], settings: { ...(s.settings || {}), docClearVersion: DOC_CLEAR_VERSION } };
         await Store.set(STORE_KEY, s);
       }
-      if (alive) setStore(s);
+      else s = normalizeStore(s);
+      s = await initCloudSync(s);
+      if (alive) { storeRef.current = s; setStore(s); scheduleCloudSave(s); }
     })();
     return () => { alive = false; };
   }, []);
 
-  useEffect(() => { setDrawerOpen(false); }, [view]);
+  useEffect(() => {
+    const onStorage = async (e) => {
+      if (e.key !== STORE_KEY && e.key !== null) return;
+      const remote = await Store.get(STORE_KEY);
+      if (!remote) return;
+      const normalized = normalizeStore(remote);
+      storeRef.current = normalized;
+      setStore(normalized);
+      notify('Data was updated in another browser tab.', 'warn');
+    };
+    window.addEventListener('storage', onStorage);
+    return () => window.removeEventListener('storage', onStorage);
+  }, []);
 
-  const persist = (next) => { setStore(next); Store.set(STORE_KEY, next); };
+  useEffect(() => { setDrawerOpen(false); }, [view]);
 
   if (!store) {
     return (
@@ -3539,105 +4352,158 @@ export default function App() {
     );
   }
 
+  const defaultCompanyId = (store.settings || {}).defaultCompanyId || '';
+
   // ---- documents ----
-  const upsertDoc = (doc) => {
-    const docs = store.documents || [];
-    const exists = docs.some((d) => d.id === doc.id);
-    persist({ ...store, documents: exists ? docs.map((d) => (d.id === doc.id ? doc : d)) : [...docs, doc] });
+  const upsertDoc = async (doc) => {
+    await persist((s) => {
+      const docs = s.documents || [];
+      const exists = docs.some((d) => d.id === doc.id);
+      return { ...s, documents: exists ? docs.map((d) => (d.id === doc.id ? doc : d)) : [...docs, doc] };
+    });
     setDocEditor(null);
     setView('documenti');
   };
-  const deleteDoc = (doc) => persist({ ...store, documents: (store.documents || []).filter((d) => d.id !== doc.id) });
-  const duplicateDoc = (doc) => {
+  const deleteDoc = (doc) => persist((s) => ({ ...s, documents: (s.documents || []).filter((d) => d.id !== doc.id) }));
+  const duplicateDoc = async (doc) => {
     const y = yearOf(todayISO());
-    const seq = nextSeq(store.documents, doc.companyId, doc.type, y);
+    const seq = nextSeq(storeRef.current.documents, doc.companyId, doc.type, y);
     const copy = { ...JSON.parse(JSON.stringify(doc)), id: uid(), status: 'bozza', date: todayISO(), seq, year: y, number: formatDocNumber(doc.type, seq, y), createdAt: Date.now() };
-    persist({ ...store, documents: [...(store.documents || []), copy] });
+    await persist((s) => ({ ...s, documents: [...(s.documents || []), copy] }));
     setDocEditor({ id: copy.id });
   };
-  const setDocStatus = (doc, status) => persist({ ...store, documents: (store.documents || []).map((d) => (d.id === doc.id ? { ...d, status } : d)) });
+  const setDocStatus = (doc, status) => persist((s) => ({ ...s, documents: (s.documents || []).map((d) => (d.id === doc.id ? { ...d, status } : d)) }));
 
   // ---- companies ----
-  const upsertCompany = (co) => {
-    const arr = store.companies || [];
-    const exists = arr.some((c) => c.id === co.id);
-    let settings = store.settings || {};
-    if (!exists && !settings.defaultCompanyId) settings = { ...settings, defaultCompanyId: co.id };
-    persist({ ...store, companies: exists ? arr.map((c) => (c.id === co.id ? co : c)) : [...arr, co], settings });
+  const upsertCompany = async (co) => {
+    await persist((s) => {
+      const arr = s.companies || [];
+      const exists = arr.some((c) => c.id === co.id);
+      let settings = s.settings || {};
+      if (!exists && !settings.defaultCompanyId) settings = { ...settings, defaultCompanyId: co.id };
+      return { ...s, companies: exists ? arr.map((c) => (c.id === co.id ? co : c)) : [...arr, co], settings };
+    });
     setCompanyEditor(null);
     setView('aziende');
   };
-  const deleteCompany = (co) => {
-    const companies = (store.companies || []).filter((c) => c.id !== co.id);
-    let settings = store.settings || {};
+  const deleteCompany = (co) => persist((s) => {
+    const companies = (s.companies || []).filter((c) => c.id !== co.id);
+    let settings = s.settings || {};
     if (settings.defaultCompanyId === co.id) settings = { ...settings, defaultCompanyId: companies[0] ? companies[0].id : '' };
-    persist({ ...store, companies, settings });
-  };
-  const setDefaultCompany = (id) => persist({ ...store, settings: { ...(store.settings || {}), defaultCompanyId: id } });
+    return { ...s, companies, settings };
+  });
+  const setDefaultCompany = (id) => persist((s) => ({ ...s, settings: { ...(s.settings || {}), defaultCompanyId: id } }));
 
   // ---- clients / catalog ----
-  const upsertClient = (cl) => {
-    const arr = store.clients || [];
+  const upsertClient = (cl) => persist((s) => {
+    const arr = s.clients || [];
     const exists = arr.some((c) => c.id === cl.id);
-    persist({ ...store, clients: exists ? arr.map((c) => (c.id === cl.id ? cl : c)) : [...arr, cl] });
+    return { ...s, clients: exists ? arr.map((c) => (c.id === cl.id ? cl : c)) : [...arr, cl] };
+  });
+  const deleteClient = async (cl) => {
+    for (const a of cl.attachments || []) {
+      if (a.fileKey) { try { await FileStore.del(a.fileKey); } catch (e) { /* */ } }
+    }
+    await persist((s) => ({ ...s, clients: (s.clients || []).filter((c) => c.id !== cl.id) }));
   };
-  const deleteClient = (cl) => persist({ ...store, clients: (store.clients || []).filter((c) => c.id !== cl.id) });
   const addClientFile = async (clientId, meta, file) => {
     if (!file) return;
+    const err = validateUploadFile(file);
+    if (err) { notify(err, 'error'); return; }
     const id = uid();
     let att = { id, category: (meta && meta.category) || 'Document', label: (meta && meta.label) || '', fileName: file.name, fileType: file.type || 'application/octet-stream', fileSize: file.size, fileKey: '', addedAt: Date.now() };
-    try { const dataUrl = await readFileAsDataURL(file); const key = 'fg_file_' + id; await FileStore.set(key, dataUrl); att.fileKey = key; } catch (e) { /* */ }
-    persist({ ...store, clients: (store.clients || []).map((c) => (c.id === clientId ? { ...c, attachments: [...((c.attachments) || []), att] } : c)) });
+    try {
+      const dataUrl = await readFileAsDataURL(file);
+      const key = 'fg_file_' + id;
+      const fileOk = await FileStore.set(key, dataUrl);
+      if (!fileOk) notify('Attachment saved in memory only (storage limit reached).', 'warn');
+      att.fileKey = key;
+    } catch (e) {
+      notify('Could not read the uploaded file.', 'error');
+      return;
+    }
+    await persist((s) => ({ ...s, clients: (s.clients || []).map((c) => (c.id === clientId ? { ...c, attachments: [...((c.attachments) || []), att] } : c)) }));
   };
   const deleteClientFile = async (clientId, fileId) => {
-    const c = (store.clients || []).find((x) => x.id === clientId);
+    const c = (storeRef.current.clients || []).find((x) => x.id === clientId);
     const att = c && (c.attachments || []).find((a) => a.id === fileId);
     if (att && att.fileKey) { try { await FileStore.del(att.fileKey); } catch (e) { /* */ } }
-    persist({ ...store, clients: (store.clients || []).map((x) => (x.id === clientId ? { ...x, attachments: (x.attachments || []).filter((a) => a.id !== fileId) } : x)) });
+    await persist((s) => ({ ...s, clients: (s.clients || []).map((x) => (x.id === clientId ? { ...x, attachments: (x.attachments || []).filter((a) => a.id !== fileId) } : x)) }));
   };
-  const upsertProduct = (p) => {
-    const arr = store.products || [];
+  const upsertProduct = (p) => persist((s) => {
+    const arr = s.products || [];
     const exists = arr.some((x) => x.id === p.id);
-    persist({ ...store, products: exists ? arr.map((x) => (x.id === p.id ? p : x)) : [...arr, p] });
-  };
-  const deleteProduct = (p) => persist({ ...store, products: (store.products || []).filter((x) => x.id !== p.id) });
+    return { ...s, products: exists ? arr.map((x) => (x.id === p.id ? p : x)) : [...arr, p] };
+  });
+  const deleteProduct = (p) => persist((s) => ({ ...s, products: (s.products || []).filter((x) => x.id !== p.id) }));
   const addIncoming = async (meta, file) => {
     const id = meta.id || uid();
     let rec = { ...meta, id, fileKey: meta.fileKey || '', createdAt: Date.now() };
     if (file) {
+      const err = validateUploadFile(file);
+      if (err) { notify(err, 'error'); return; }
       rec.fileName = file.name; rec.fileType = file.type || 'application/pdf'; rec.fileSize = file.size;
-      try { const dataUrl = await readFileAsDataURL(file); const key = 'fg_file_' + id; await FileStore.set(key, dataUrl); rec.fileKey = key; rec.data = ''; } catch (e) { /* */ }
+      try {
+        const dataUrl = await readFileAsDataURL(file);
+        const key = 'fg_file_' + id;
+        const fileOk = await FileStore.set(key, dataUrl);
+        if (!fileOk) notify('File saved in memory only (storage limit reached).', 'warn');
+        rec.fileKey = key; rec.data = '';
+      } catch (e) { notify('Could not read the uploaded file.', 'error'); return; }
     }
-    persist({ ...store, incoming: [...(store.incoming || []), rec] });
+    await persist((s) => ({ ...s, incoming: [...(s.incoming || []), rec] }));
   };
   const updateIncoming = async (meta, file) => {
     let patch = { ...meta };
     if (file) {
+      const err = validateUploadFile(file);
+      if (err) { notify(err, 'error'); return; }
       patch.fileName = file.name; patch.fileType = file.type || 'application/pdf'; patch.fileSize = file.size;
-      try { const dataUrl = await readFileAsDataURL(file); const key = meta.fileKey || ('fg_file_' + meta.id); await FileStore.set(key, dataUrl); patch.fileKey = key; patch.data = ''; } catch (e) { /* */ }
+      try {
+        const dataUrl = await readFileAsDataURL(file);
+        const key = meta.fileKey || ('fg_file_' + meta.id);
+        const fileOk = await FileStore.set(key, dataUrl);
+        if (!fileOk) notify('File saved in memory only (storage limit reached).', 'warn');
+        patch.fileKey = key; patch.data = '';
+      } catch (e) { notify('Could not read the uploaded file.', 'error'); return; }
     }
-    persist({ ...store, incoming: (store.incoming || []).map((r) => (r.id === meta.id ? { ...r, ...patch } : r)) });
+    await persist((s) => ({ ...s, incoming: (s.incoming || []).map((r) => (r.id === meta.id ? { ...r, ...patch } : r)) }));
   };
   const deleteIncoming = async (rec) => {
     if (rec.fileKey) { try { await FileStore.del(rec.fileKey); } catch (e) { /* */ } }
-    persist({ ...store, incoming: (store.incoming || []).filter((r) => r.id !== rec.id) });
+    await persist((s) => ({ ...s, incoming: (s.incoming || []).filter((r) => r.id !== rec.id) }));
   };
 
   // ---- settings ----
-  const updateSettings = (partial) => persist({ ...store, settings: { ...(store.settings || {}), ...partial } });
-  const exportBackup = () => downloadBlob(`fatture-backup-${todayISO()}.json`, JSON.stringify(store, null, 2), 'application/json;charset=utf-8');
-  const importBackup = (data) => {
-    if (!data || typeof data !== 'object' || !Array.isArray(data.companies)) { alert('Invalid backup: unrecognized structure.'); return; }
-    persist({
-      companies: data.companies || [], clients: data.clients || [], products: data.products || [], documents: data.documents || [],
-      settings: data.settings || { currency: 'EUR', defaultTemplate: 'classico' },
-    });
+  const updateSettings = (partial) => persist((s) => ({ ...s, settings: { ...(s.settings || {}), ...partial } }));
+  const exportBackup = async () => {
+    const json = await buildBackupBlob(storeRef.current);
+    downloadBlob(`fatture-backup-${todayISO()}.json`, json, 'application/json;charset=utf-8');
+  };
+  const importBackup = async (data) => {
+    try {
+      const normalized = await restoreBackupPayload(data);
+      storeRef.current = normalized;
+      setStore(normalized);
+      notify('Backup restored successfully.', 'warn');
+      setView('dashboard');
+    } catch (e) {
+      notify(e.message || 'Import failed.', 'error');
+    }
+  };
+  const resetSeed = async () => {
+    const keys = collectFileKeys(storeRef.current);
+    await purgeFileKeys(keys);
+    const seeded = seedStore();
+    storeRef.current = seeded;
+    setStore(seeded);
+    await Store.set(STORE_KEY, seeded);
     setView('dashboard');
   };
-  const resetSeed = () => { persist(seedStore()); setView('dashboard'); };
 
   // ---- chrome ----
   const defCo = companyById(store, (store.settings || {}).defaultCompanyId) || (store.companies || [])[0] || null;
+  const defCoLogo = defCo && safeImageSrc(defCo.logo);
   const editorMode = !!docEditor || !!companyEditor;
 
   const navList = (
@@ -3660,24 +4526,24 @@ export default function App() {
   );
   const companySwitch = (
     <button className="company-switch" onClick={() => setSwitchOpen(true)} title="Switch active company">
-      <span className="cs-logo">{defCo && defCo.logo ? <img src={defCo.logo} alt="" /> : <Building2 size={16} />}</span>
+      <span className="cs-logo">{defCoLogo ? <img src={defCoLogo} alt="" /> : <Building2 size={16} />}</span>
       <span className="cs-text"><span className="cs-label">Active company</span><span className="cs-name">{defCo ? defCo.name : 'No company'}</span></span>
       <ChevronDown size={15} className="cs-caret" />
     </button>
   );
 
   let editorNode = null;
-  if (docEditor) editorNode = <DocumentEditor store={store} editingId={docEditor.id} draftType={docEditor.draftType} onSave={upsertDoc} onCancel={() => setDocEditor(null)} onUpsertClient={upsertClient} onAddClientFile={addClientFile} onDeleteClientFile={deleteClientFile} />;
+  if (docEditor) editorNode = <DocumentEditor store={store} editingId={docEditor.id} draftType={docEditor.draftType} onSave={upsertDoc} onCancel={() => setDocEditor(null)} onUpsertClient={upsertClient} onAddClientFile={addClientFile} onDeleteClientFile={deleteClientFile} onUpdateCompany={upsertCompany} onNotify={notify} />;
   else if (companyEditor) editorNode = <CompanyEditor store={store} editingId={companyEditor.id} onSave={upsertCompany} onCancel={() => setCompanyEditor(null)} />;
 
   let viewNode = null;
   if (view === 'dashboard') viewNode = <Dashboard store={store} onNew={() => setDocEditor({ draftType: 'fattura' })} onView={(d) => setViewerDoc(d)} onGo={() => setView('documenti')} />;
-  else if (view === 'documenti') viewNode = <DocumentsList store={store} onNew={() => setDocEditor({ draftType: 'fattura' })} onEdit={(d) => setDocEditor({ id: d.id })} onView={(d) => setViewerDoc(d)} onDuplicate={duplicateDoc} onDelete={deleteDoc} onStatus={setDocStatus} />;
-  else if (view === 'aziende') viewNode = <CompaniesView store={store} onNew={() => setCompanyEditor({})} onEdit={(co) => setCompanyEditor({ id: co.id })} onDelete={deleteCompany} onSetDefault={setDefaultCompany} />;
-  else if (view === 'clienti') viewNode = <ClientsView store={store} onSave={upsertClient} onDelete={deleteClient} onAddFile={addClientFile} onDeleteFile={deleteClientFile} />;
+  else if (view === 'documenti') viewNode = <DocumentsList store={store} defaultCompanyId={defaultCompanyId} onNew={() => setDocEditor({ draftType: 'fattura' })} onEdit={(d) => setDocEditor({ id: d.id })} onView={(d) => setViewerDoc(d)} onDuplicate={duplicateDoc} onDelete={deleteDoc} onStatus={setDocStatus} />;
+  else if (view === 'aziende') viewNode = <CompaniesView store={store} onNew={() => setCompanyEditor({})} onEdit={(co) => setCompanyEditor({ id: co.id })} onDelete={deleteCompany} onSetDefault={setDefaultCompany} onNotify={notify} />;
+  else if (view === 'clienti') viewNode = <ClientsView store={store} onSave={upsertClient} onDelete={deleteClient} onAddFile={addClientFile} onDeleteFile={deleteClientFile} onNotify={notify} />;
   else if (view === 'listino') viewNode = <ProductsView store={store} onSave={upsertProduct} onDelete={deleteProduct} />;
-  else if (view === 'ricevute') viewNode = <IncomingView store={store} onAdd={addIncoming} onUpdate={updateIncoming} onDelete={deleteIncoming} />;
-  else if (view === 'impostazioni') viewNode = <SettingsView store={store} onUpdateSettings={updateSettings} onExport={exportBackup} onImport={importBackup} onReset={resetSeed} />;
+  else if (view === 'ricevute') viewNode = <IncomingView store={store} onAdd={addIncoming} onUpdate={updateIncoming} onDelete={deleteIncoming} onNotify={notify} />;
+  else if (view === 'impostazioni') viewNode = <SettingsView store={store} onUpdateSettings={updateSettings} onExport={exportBackup} onImport={importBackup} onReset={resetSeed} onNotify={notify} cloudStatus={cloudStatus} syncLink={syncLink} onCopySyncLink={copySyncLink} />;
 
   return (
     <div className={cx('fg', !editorMode && 'app')}>
@@ -3696,7 +4562,7 @@ export default function App() {
               {brand}
               {companySwitch}
               {navList}
-              <div className="side-foot">{(store.companies || []).length} aziende · {(store.documents || []).length} documenti</div>
+              <div className="side-foot">{(store.companies || []).length} companies · {(store.documents || []).length} documents</div>
             </aside>
           )}
 
@@ -3711,19 +4577,19 @@ export default function App() {
             </>
           )}
 
-          <main className="main"><div className="main-inner">{viewNode}</div></main>
+          <main className="main"><div className="main-inner"><AppNotice notice={notice} onDismiss={() => setNotice(null)} />{viewNode}</div></main>
         </>
       )}
 
       <DocumentViewer open={!!viewerDoc} doc={viewerDoc} store={store} onClose={() => setViewerDoc(null)} onEdit={(d) => { setViewerDoc(null); setDocEditor({ id: d.id }); }} />
 
       <Modal open={switchOpen} onClose={() => setSwitchOpen(false)} title="Active company">
-        <p className="hint-block">The active company is used as the default issuer for new documents.</p>
+        <p className="hint-block">The active company is used as the default issuer for new documents and filters the document list.</p>
         <div className="picklist">
           {(store.companies || []).map((co) => {
             const on = (store.settings || {}).defaultCompanyId === co.id;
             return (
-              <button key={co.id} className={cx('pickrow', on && 'on')} onClick={() => { setDefaultCompany(co.id); setSwitchOpen(false); }}>
+              <button key={co.id} className={cx('pickrow', on && 'on')} onClick={() => { setDefaultCompany(co.id); setSwitchOpen(false); setView('documenti'); }}>
                 <span className="pr-desc">{co.name}</span>
                 <span className="pr-meta mono">{[co.city, co.regime].filter(Boolean).join(' · ')}{on ? ' · active' : ''}</span>
               </button>
