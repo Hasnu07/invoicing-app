@@ -1208,7 +1208,7 @@ const TPL_PURO_MOTORS = `<!doctype html><html lang="en"><head><meta charset="utf
 <style>
 @page{size:A4;margin:0}*{box-sizing:border-box}
 body{margin:0;font-family:Arial,'Helvetica Neue',Helvetica,sans-serif;color:#1f1f1f;font-size:11.5px;line-height:1.5;-webkit-print-color-adjust:exact;print-color-adjust:exact}
-.page{width:210mm;min-height:297mm;margin:0 auto;background:#fff;padding:15mm 15mm 12mm}
+.page{width:210mm;min-height:297mm;margin:0 auto;background:#fff;padding:15mm 15mm 48mm}
 .head{display:flex;justify-content:flex-end}
 .hbox{text-align:right}
 .hbox img{max-height:82px;max-width:300px;object-fit:contain;display:inline-block}
@@ -1233,7 +1233,7 @@ body{margin:0;font-family:Arial,'Helvetica Neue',Helvetica,sans-serif;color:#1f1
 .paid{margin-top:12px;color:#821916;font-weight:700;font-size:11.5px}
 .tbl{width:100%;border-collapse:collapse;margin-top:12px}
 .tbl thead{display:table-header-group}
-.tbl tbody tr{page-break-inside:avoid}
+.tbl tbody tr{page-break-inside:avoid;break-inside:avoid}
 .tbl th{border-bottom:2px solid #222;text-align:left;font-weight:700;font-size:13.5px;padding:9px 8px}
 .tbl th.r{text-align:right}.tbl th.c{text-align:center}
 .tbl td{border-bottom:1px solid #e6e6e6;padding:13px 8px;vertical-align:middle;font-size:11.5px}
@@ -1248,7 +1248,12 @@ body{margin:0;font-family:Arial,'Helvetica Neue',Helvetica,sans-serif;color:#1f1
 .bank .h{font-size:11.5px;color:#222;margin-bottom:9px}
 .bcols{display:flex;gap:18px;font-size:10.5px;color:#555;line-height:1.55}
 .bcols .c{flex:1}
-.foot{margin-top:14mm;text-align:center}
+.tbl tfoot{display:table-footer-group}
+.tbl tfoot td{border:none;padding:14px 0 0;vertical-align:top}
+.tbl tfoot .tot{margin-top:0}
+.foot{text-align:center}
+.foot-fixed{position:fixed;bottom:0;left:50%;transform:translateX(-50%);width:210mm;padding:0 15mm 12mm;z-index:5}
+@media screen{.foot-fixed{position:relative;transform:none;left:auto;width:auto;padding:0;margin-top:14mm}}
 .tcbar{background:#821916;color:#fff;font-weight:700;font-size:11.5px;padding:9px 14px;border-radius:2px;display:inline-block;min-width:62%}
 .qbar{background:#821916;color:#fff;font-size:10.5px;padding:6px 14px;border-radius:2px;display:inline-block;min-width:42%;margin-top:7px}
 </style></head><body>
@@ -1285,6 +1290,24 @@ body{margin:0;font-family:Arial,'Helvetica Neue',Helvetica,sans-serif;color:#1f1
     <tbody>{{#items}}
       <tr><td>{{desc}}{{#note}}<div class="cond">{{note}}</div>{{/note}}</td>{{#has_values}}<td class="r">{{price}}</td>{{#has_discount}}<td class="r">{{discount}}</td>{{/has_discount}}{{/has_values}}<td class="c">{{qty}}{{#is_goods}} {{unit}}{{/is_goods}}</td>{{#has_values}}<td class="r">{{amount}}</td>{{/has_values}}</tr>{{/items}}
     </tbody>
+    {{#has_values}}<tfoot><tr><td colspan="9">
+      <div class="tot"><div class="totbox">
+        <div class="tr"><span class="k">Subtotal</span><span>{{totals.taxable}}</span></div>
+        {{#has_fund}}<div class="tr"><span>incl. pension fund</span><span>{{totals.fund}}</span></div>{{/has_fund}}
+        <div class="tr"><span>Tax {{vat_rate_label}}</span><span>{{totals.vat}}</span></div>
+        {{#has_stamp}}<div class="tr"><span>Stamp duty</span><span>{{totals.stamp}}</span></div>{{/has_stamp}}
+        <div class="tr g"><span>{{#is_credit}}Total Credited{{/is_credit}}{{^is_credit}}Total{{/is_credit}}</span><span>{{totals.total}}</span></div>
+        {{#has_withholding}}<div class="tr"><span>Withholding</span><span>&minus; {{totals.withholding}}</span></div><div class="tr g"><span>Net to Pay</span><span>{{totals.net}}</span></div>{{/has_withholding}}
+      </div></div>
+      {{#show_bank}}<div class="bank">
+        <div class="h">Bank Details:</div>
+        <div class="bcols">
+          <div class="c">AED Account Details:<br/>PUROSANGUE MOTORS L.L.C-F.Z<br/>AE03 0860 0000 0965 9696 419<br/>WIOBAEADXXX</div>
+          <div class="c">USD Account Details:<br/>PUROSANGUE MOTORS L.L.C-F.Z<br/>AE90 0860 0000 0955 2721 798<br/>WIOBAEADXXX</div>
+          <div class="c">EUR Account Details:<br/>PUROSANGUE MOTORS L.L.C-F.Z<br/>AE53 0860 0000 0937 5026 418<br/>WIOBAEADXXX</div>
+        </div>
+      </div>{{/show_bank}}
+    </td></tr></tfoot>{{/has_values}}
   </table>
 
   {{#is_goods}}
@@ -1300,27 +1323,9 @@ body{margin:0;font-family:Arial,'Helvetica Neue',Helvetica,sans-serif;color:#1f1
   {{#transport.remarks}}<div class="tp-rem"><b>Remarks:</b> {{transport.remarks}}</div>{{/transport.remarks}}
   {{/is_goods}}
 
-  {{#has_values}}<div class="tot"><div class="totbox">
-    <div class="tr"><span class="k">Subtotal</span><span>{{totals.taxable}}</span></div>
-    {{#has_fund}}<div class="tr"><span>incl. pension fund</span><span>{{totals.fund}}</span></div>{{/has_fund}}
-    <div class="tr"><span>Tax {{vat_rate_label}}</span><span>{{totals.vat}}</span></div>
-    {{#has_stamp}}<div class="tr"><span>Stamp duty</span><span>{{totals.stamp}}</span></div>{{/has_stamp}}
-    <div class="tr g"><span>{{#is_credit}}Total Credited{{/is_credit}}{{^is_credit}}Total{{/is_credit}}</span><span>{{totals.total}}</span></div>
-    {{#has_withholding}}<div class="tr"><span>Withholding</span><span>&minus; {{totals.withholding}}</span></div><div class="tr g"><span>Net to Pay</span><span>{{totals.net}}</span></div>{{/has_withholding}}
-  </div></div>{{/has_values}}
-
   {{#is_receipt}}<div class="paid">Payment received via {{payment.method}}{{#date_dot}} on {{date_dot}}{{/date_dot}}.</div>{{/is_receipt}}
 
-  {{#show_bank}}<div class="bank">
-    <div class="h">Bank Details:</div>
-    <div class="bcols">
-      <div class="c">AED Account Details:<br/>PUROSANGUE MOTORS L.L.C-F.Z<br/>AE03 0860 0000 0965 9696 419<br/>WIOBAEADXXX</div>
-      <div class="c">USD Account Details:<br/>PUROSANGUE MOTORS L.L.C-F.Z<br/>AE90 0860 0000 0955 2721 798<br/>WIOBAEADXXX</div>
-      <div class="c">EUR Account Details:<br/>PUROSANGUE MOTORS L.L.C-F.Z<br/>AE53 0860 0000 0937 5026 418<br/>WIOBAEADXXX</div>
-    </div>
-  </div>{{/show_bank}}
-
-  <div class="foot">
+  <div class="foot foot-fixed">
     {{#has_tax_notes}}<div class="tcbar">Terms &amp; Conditions: &ldquo;{{tax_notes}}&rdquo;</div>{{/has_tax_notes}}
     <br/><div class="qbar">Do you have any questions? Get in touch with us.</div>
   </div>
@@ -1330,7 +1335,7 @@ const TPL_PURO_WATCHES = `<!doctype html><html lang="en"><head><meta charset="ut
 <style>
 @page{size:A4;margin:0}*{box-sizing:border-box}
 body{margin:0;font-family:Arial,'Helvetica Neue',Helvetica,sans-serif;color:#1f1f1f;font-size:11.5px;line-height:1.5;-webkit-print-color-adjust:exact;print-color-adjust:exact}
-.page{width:210mm;min-height:297mm;margin:0 auto;background:#fff;padding:15mm 15mm 12mm}
+.page{width:210mm;min-height:297mm;margin:0 auto;background:#fff;padding:15mm 15mm 48mm}
 .head{display:flex;justify-content:flex-end}
 .hbox{text-align:right}
 .hbox img{max-height:82px;max-width:300px;object-fit:contain;display:inline-block}
@@ -1355,18 +1360,22 @@ body{margin:0;font-family:Arial,'Helvetica Neue',Helvetica,sans-serif;color:#1f1
 .paid{margin-top:12px;color:#821916;font-weight:700;font-size:11.5px}
 .tbl{width:100%;border-collapse:collapse;margin-top:12px}
 .tbl thead{display:table-header-group}
-.tbl tbody tr{page-break-inside:avoid}
+.tbl tbody tr{page-break-inside:avoid;break-inside:avoid}
 .tbl th{border-bottom:2px solid #222;text-align:left;font-weight:700;font-size:13.5px;padding:9px 8px}
 .tbl th.r{text-align:right}.tbl th.c{text-align:center}
 .tbl td{padding:14px 8px;vertical-align:middle;font-size:11.5px}
 .tbl td.r{text-align:right}.tbl td.c{text-align:center}
+.tbl tfoot{display:table-footer-group}
+.tbl tfoot td{border:none;padding:14px 0 0;vertical-align:top}
 .trow{display:flex;justify-content:flex-end;border-top:1px solid #d9d9d9}
 .trow .box{width:64mm;display:flex;justify-content:space-between;padding:14px 8px;font-size:12.5px}
 .trow .k{font-weight:700}
 .trow.g .box{font-size:13.5px}
 .bank{margin-top:14mm;font-size:10.5px;color:#444}
 .bank .h{font-size:11.5px;color:#222;margin-bottom:8px}
-.foot{margin-top:12mm;text-align:center}
+.foot{text-align:center}
+.foot-fixed{position:fixed;bottom:0;left:50%;transform:translateX(-50%);width:210mm;padding:0 15mm 12mm;z-index:5}
+@media screen{.foot-fixed{position:relative;transform:none;left:auto;width:auto;padding:0;margin-top:14mm}}
 .tcbar{background:#821916;color:#fff;font-weight:700;font-size:11.5px;padding:9px 14px;border-radius:2px;display:inline-block;min-width:62%}
 .qbar{background:#821916;color:#fff;font-size:10.5px;padding:6px 14px;border-radius:2px;display:inline-block;min-width:42%;margin-top:7px}
 </style></head><body>
@@ -1404,6 +1413,15 @@ body{margin:0;font-family:Arial,'Helvetica Neue',Helvetica,sans-serif;color:#1f1
     <tbody>{{#items}}
       <tr><td>{{desc}}{{#note}}<div class="cond" style="font-weight:700;font-size:10.5px;margin-top:4px">{{note}}</div>{{/note}}</td>{{#has_values}}<td class="r">{{price}}</td>{{#has_discount}}<td class="r">{{discount}}</td>{{/has_discount}}{{/has_values}}<td class="c">{{qty}}{{#is_goods}} {{unit}}{{/is_goods}}</td>{{#has_values}}<td class="r">{{amount}}</td>{{/has_values}}</tr>{{/items}}
     </tbody>
+    {{#has_values}}<tfoot><tr><td colspan="9">
+      <div class="trow"><div class="box"><span class="k">Subtotal</span><span>{{totals.taxable}}</span></div></div>
+      {{#has_fund}}<div class="trow" style="margin-top:10px"><div class="box"><span class="k">incl. pension fund</span><span>{{totals.fund}}</span></div></div>{{/has_fund}}
+      <div class="trow" style="margin-top:14px"><div class="box"><span class="k">Tax {{vat_rate_label}}</span><span>{{totals.vat}}</span></div></div>
+      {{#has_stamp}}<div class="trow" style="margin-top:10px"><div class="box"><span class="k">Stamp duty</span><span>{{totals.stamp}}</span></div></div>{{/has_stamp}}
+      <div class="trow g" style="margin-top:14px"><div class="box"><span class="k">{{#is_credit}}Total Credited{{/is_credit}}{{^is_credit}}Amount Due{{/is_credit}}</span><span class="k">{{totals.total}}</span></div></div>
+      {{#has_withholding}}<div class="trow" style="margin-top:10px"><div class="box"><span class="k">Withholding</span><span>&minus; {{totals.withholding}}</span></div></div><div class="trow g" style="margin-top:14px"><div class="box"><span class="k">Net to Pay</span><span class="k">{{totals.net}}</span></div></div>{{/has_withholding}}
+      {{#show_bank}}{{#has_bank_info}}<div class="bank"><div class="h">Bank Details:</div>{{{company.bank_info}}}</div>{{/has_bank_info}}{{/show_bank}}
+    </td></tr></tfoot>{{/has_values}}
   </table>
 
   {{#is_goods}}
@@ -1419,20 +1437,9 @@ body{margin:0;font-family:Arial,'Helvetica Neue',Helvetica,sans-serif;color:#1f1
   {{#transport.remarks}}<div class="tp-rem"><b>Remarks:</b> {{transport.remarks}}</div>{{/transport.remarks}}
   {{/is_goods}}
 
-  {{#has_values}}
-  <div class="trow"><div class="box"><span class="k">Subtotal</span><span>{{totals.taxable}}</span></div></div>
-  {{#has_fund}}<div class="trow" style="margin-top:10px"><div class="box"><span class="k">incl. pension fund</span><span>{{totals.fund}}</span></div></div>{{/has_fund}}
-  <div class="trow" style="margin-top:14px"><div class="box"><span class="k">Tax {{vat_rate_label}}</span><span>{{totals.vat}}</span></div></div>
-  {{#has_stamp}}<div class="trow" style="margin-top:10px"><div class="box"><span class="k">Stamp duty</span><span>{{totals.stamp}}</span></div></div>{{/has_stamp}}
-  <div class="trow g" style="margin-top:14px"><div class="box"><span class="k">{{#is_credit}}Total Credited{{/is_credit}}{{^is_credit}}Amount Due{{/is_credit}}</span><span class="k">{{totals.total}}</span></div></div>
-  {{#has_withholding}}<div class="trow" style="margin-top:10px"><div class="box"><span class="k">Withholding</span><span>&minus; {{totals.withholding}}</span></div></div><div class="trow g" style="margin-top:14px"><div class="box"><span class="k">Net to Pay</span><span class="k">{{totals.net}}</span></div></div>{{/has_withholding}}
-  {{/has_values}}
-
   {{#is_receipt}}<div class="paid">Payment received via {{payment.method}}{{#date_dot}} on {{date_dot}}{{/date_dot}}.</div>{{/is_receipt}}
 
-  {{#show_bank}}{{#has_bank_info}}<div class="bank"><div class="h">Bank Details:</div>{{{company.bank_info}}}</div>{{/has_bank_info}}{{/show_bank}}
-
-  <div class="foot">
+  <div class="foot foot-fixed">
     {{#has_tax_notes}}<div class="tcbar">Terms &amp; Conditions: &ldquo;{{tax_notes}}&rdquo;</div>{{/has_tax_notes}}
     <br/><div class="qbar">Do you have any questions? Get in touch with us.</div>
   </div>
@@ -1898,6 +1905,8 @@ function seedStore() {
         lines: [ L('Patek Philippe Grandmaster Chime | Ref 6300A | SNR 0000001', 1, 1250000, 'Unique piece'), L('Richard Mille RM 056 | Ref RM056 | SNR 000045', 1, 880000, 'Condition: USED') ] }),
     D({ companyId: c2, clientId: cl2, currency: 'AED', number: 'INV-00015', seq: 15, date: '2026-04-28', dueDate: '2026-05-05', contactPerson: 'Purosangue Motors LLC', causaleFiscale: 'Margin scheme is adopted in this invoice',
         lines: [ L('Audemars Piguet Royal Oak Offshore | Ref 26470ST | SNR J55667', 1, 68000, 'Condition: USED'), L('Hublot Big Bang | Ref 301.SB | SNR 1209887', 1, 21000, 'Condition: USED'), L('Panerai Luminor Marina | Ref PAM01312 | SNR BB998812', 1, 9500, 'Condition: USED') ] }),
+    D({ companyId: c2, clientId: cl2, currency: 'EUR', number: 'INV-00016', seq: 16, date: '2026-06-08', dueDate: '2026-06-15', contactPerson: 'Purosangue Motors LLC', subject: 'ROLEX DAYTONA COLLECTION', causaleFiscale: 'Margin scheme is adopted in this invoice',
+        lines: [ L('Rolex Daytona | Ref 116500LN | SNR 9R223344', 1, 22000, 'Condition: USED'), L('Rolex Daytona | Ref 116500LN | SNR 8H551020', 1, 34000, 'Condition: USED'), L('Rolex Daytona | Ref 116500LN | SNR 7G442211', 1, 55000, 'Condition: USED'), L('Rolex Daytona | Ref 116500LN | SNR 6F331100', 1, 59500, 'Condition: USED') ] }),
     D({ companyId: c2, clientId: cl2, type: 'proforma', currency: 'EUR', number: 'PRO-00018', seq: 18, date: '2026-06-02', dueDate: '2026-06-09', contactPerson: 'Purosangue Motors LLC', subject: 'OFFER | ROLEX DAYTONA', causaleFiscale: 'Margin scheme is adopted in this invoice',
         lines: [ L('Rolex Daytona | Ref 116500LN | SNR 9R223345', 1, 39000, 'Condition: USED') ] }),
     D({ companyId: c2, clientId: cl2, type: 'ddt', currency: 'EUR', number: 'DN-0008', seq: 8, date: '2026-06-06',
