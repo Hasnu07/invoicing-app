@@ -817,6 +817,7 @@ body{margin:0;font-family:Arial,'Helvetica Neue',Helvetica,sans-serif;color:#2b2
 @page{size:A4;margin:0}*{box-sizing:border-box}
 body{margin:0;font-family:Arial,'Helvetica Neue',Helvetica,sans-serif;color:#1f1f1f;font-size:11.5px;line-height:1.5;-webkit-print-color-adjust:exact;print-color-adjust:exact}
 .page{width:210mm;min-height:297mm;margin:0 auto;background:#fff;padding:15mm 15mm 48mm}
+@media print{@page{size:A4;margin:15mm 15mm 48mm 15mm}.page{width:auto;min-height:0;padding:0;margin:0}}
 .head{display:flex;justify-content:flex-end}
 .hbox{text-align:right}
 .hbox img{max-height:82px;max-width:300px;object-fit:contain;display:inline-block}
@@ -943,6 +944,7 @@ body{margin:0;font-family:Arial,'Helvetica Neue',Helvetica,sans-serif;color:#1f1
 @page{size:A4;margin:0}*{box-sizing:border-box}
 body{margin:0;font-family:Arial,'Helvetica Neue',Helvetica,sans-serif;color:#1f1f1f;font-size:11.5px;line-height:1.5;-webkit-print-color-adjust:exact;print-color-adjust:exact}
 .page{width:210mm;min-height:297mm;margin:0 auto;background:#fff;padding:15mm 15mm 48mm}
+@media print{@page{size:A4;margin:15mm 15mm 48mm 15mm}.page{width:auto;min-height:0;padding:0;margin:0}}
 .head{display:flex;justify-content:flex-end}
 .hbox{text-align:right}
 .hbox img{max-height:82px;max-width:300px;object-fit:contain;display:inline-block}
