@@ -445,8 +445,28 @@ function companyName(c) {
   return esc((c.name || '') + (fg ? '' : '')) + (fg ? `<span class="fg">${esc(c.forma)}</span>` : '');
 }
 
+const ALMAS_BANK2_DEFAULTS = {
+  bankLabel: 'NOVOBANCO',
+  bank2Label: 'Millennium bcp',
+  bank2: 'Millennium bcp - Portugal',
+  iban2: 'PT50 0033 0000 4583 2997 0290 5',
+  swift2: 'BCOMPTPL',
+  bank2Currency: 'EUR',
+  bank2Holder: 'Almas Elitistas Unip Lda',
+  bank2Nif: '519283627',
+  bank2Address: 'R PASCOAL MELO 3 1 PORTA 5',
+  bank2Cap: '1170-294',
+  bank2City: 'LISBOA',
+};
+
 function companyHasBank2(c) {
   return !!(c && (c.iban2 || c.bank2));
+}
+
+function mergeCompanyBankDefaults(company) {
+  if (!company || !/almas/i.test(company.name || '')) return company;
+  if (companyHasBank2(company)) return company;
+  return { ...company, ...ALMAS_BANK2_DEFAULTS };
 }
 
 function resolveActiveBank(company, doc) {
@@ -1819,11 +1839,7 @@ function seedStore() {
       address: 'Rua Pascoal de Melo, n.º 3, 1.º andar, Porta 5', cap: '1170-294', city: 'Lisboa', prov: '', country: 'Portugal',
       email: 'accounts@almaselitistas.com', phone: '+351 920 108 581', pec: '', sdi: '', rea: '', capitale: '',
       bank: 'NOVOBANCO', iban: 'PT50 0007 0000 0087 0744 4602 3', swift: 'BESCPTPL',
-      bankLabel: 'NOVOBANCO',
-      bank2Label: 'Millennium bcp',
-      bank2: 'Millennium bcp - Portugal', iban2: 'PT50 0033 0000 4583 2997 0290 5', swift2: 'BCOMPTPL', bank2Currency: 'EUR',
-      bank2Holder: 'Almas Elitistas Unip Lda', bank2Nif: '519283627',
-      bank2Address: 'R PASCOAL MELO 3 1 PORTA 5', bank2Cap: '1170-294', bank2City: 'LISBOA',
+      ...ALMAS_BANK2_DEFAULTS,
       bankInfo: 'Company: Almas Elitistas Unipessoal LDA\nBank Name: NOVOBANCO\nIBAN: PT50 0007 0000 0087 0744 4602 3\nSWIFT / BIC: BESCPTPL',
       currency: 'EUR',
       causaleFiscale: 'Margin scheme - Second-hand goods. Article 313 of Council Directive 2006/112/EC and Decree-Law 199/96 of 18 October. VAT not separately chargeable.',
@@ -2144,7 +2160,7 @@ function applyAutoStatuses(store) {
 function normalizeStore(raw) {
   if (!raw || typeof raw !== 'object') return applyAutoStatuses(seedStore());
   const s = {
-    companies: Array.isArray(raw.companies) ? raw.companies : [],
+    companies: Array.isArray(raw.companies) ? raw.companies.map(mergeCompanyBankDefaults) : [],
     clients: Array.isArray(raw.clients) ? raw.clients : [],
     products: Array.isArray(raw.products) ? raw.products : [],
     documents: Array.isArray(raw.documents) ? raw.documents : [],
@@ -2348,6 +2364,31 @@ function Segmented({ value, onChange, options }) {
         const lab = typeof o === 'object' ? o.label : o;
         return <button key={String(val)} className={cx('seg-i', value === val && 'on')} onClick={() => onChange(val)}>{lab}</button>;
       })}
+    </div>
+  );
+}
+function BankAccountPicker({ company, value, onChange }) {
+  if (!companyHasBank2(company)) return null;
+  const active = value || 'primary';
+  const primaryLabel = company.bankLabel || company.bank || 'Original account';
+  const secondaryLabel = company.bank2Label || company.bank2 || 'Alternative account';
+  const pick = (account) => {
+    const iban = account === 'secondary' ? (company.iban2 || '') : (company.iban || '');
+    onChange(account, iban);
+  };
+  return (
+    <div className="bank-picker">
+      <p className="bank-picker-hint">Choose which bank details appear on the invoice payment page.</p>
+      <div className="bank-picker-btns">
+        <button type="button" className={cx('bank-pick', active === 'primary' && 'on')} onClick={() => pick('primary')}>
+          <span className="bank-pick-title">{primaryLabel}</span>
+          <span className="bank-pick-sub mono">{company.iban || '—'}</span>
+        </button>
+        <button type="button" className={cx('bank-pick', active === 'secondary' && 'on')} onClick={() => pick('secondary')}>
+          <span className="bank-pick-title">{secondaryLabel}</span>
+          <span className="bank-pick-sub mono">{company.iban2 || '—'}</span>
+        </button>
+      </div>
     </div>
   );
 }
@@ -2612,7 +2653,11 @@ function DocumentStampBar({ theme, company, onChange, onLoadCompanyDefault, onSa
 // ============================================================================
 //  VIEWS — shared utilities
 // ============================================================================
-function companyById(store, id) { return (store.companies || []).find((c) => c.id === id) || null; }
+function companyById(store, id) {
+  const c = (store.companies || []).find((co) => co.id === id);
+  if (!c) return null;
+  return mergeCompanyBankDefaults(c);
+}
 function clientById(store, id) { return (store.clients || []).find((c) => c.id === id) || null; }
 function docNumberLabel(doc) { return doc.number || formatDocNumber(doc.type, doc.seq, doc.year); }
 function docNetTotal(doc) { const meta = DOC_TYPES[doc.type]; if (!meta || !meta.money) return null; return computeTotals(doc).nettoAPagare; }
@@ -3252,6 +3297,17 @@ function DocumentEditor({ store, editingId, draftType, onSave, onCancel, onUpser
               />
             </div>
 
+            {companyHasBank2(company) && (draft.type === 'fattura' || draft.type === 'proforma') && (
+              <div className="panel">
+                <div className="panel-title sec">Bank account on invoice</div>
+                <BankAccountPicker
+                  company={company}
+                  value={draft.payment.bankAccount}
+                  onChange={(bankAccount, iban) => patchObj('payment', { bankAccount, iban })}
+                />
+              </div>
+            )}
+
             {draft.type === 'acquisto' && (
               <div className="panel">
                 <div className="panel-title sec">Seller documents (ID / KYC)</div>
@@ -3323,21 +3379,6 @@ function DocumentEditor({ store, editingId, draftType, onSave, onCancel, onUpser
             {meta.money && (
               <Collapsible title="Payment" icon={CreditCard}>
                 <div className="form-grid">
-                  {companyHasBank2(company) && (
-                    <Field label="Bank account" full hint="Which bank details appear on the invoice payment page">
-                      <Segmented
-                        value={draft.payment.bankAccount || 'primary'}
-                        onChange={(v) => {
-                          const iban = v === 'secondary' ? (company.iban2 || '') : (company.iban || '');
-                          patchObj('payment', { bankAccount: v, iban });
-                        }}
-                        options={[
-                          { value: 'primary', label: company.bankLabel || company.bank || 'Primary' },
-                          { value: 'secondary', label: company.bank2Label || company.bank2 || 'Secondary' },
-                        ]}
-                      />
-                    </Field>
-                  )}
                   <Field label="Method"><Select value={draft.payment.method} onChange={(v) => patchObj('payment', { method: v })} options={PAYMENT_METHODS} /></Field>
                   <Field label="IBAN"><div className="inline">
                     <TextInput value={draft.payment.iban} onChange={(v) => patchObj('payment', { iban: v })} mono placeholder="IT00 0000 0000 0000 0000 0000 000" />
@@ -3995,6 +4036,14 @@ const APP_CSS = `
 
 /* ---------- segmented ---------- */
 .seg{display:inline-flex;background:var(--bg-3);border:1px solid var(--line);border-radius:10px;padding:3px;gap:3px;flex-wrap:wrap;}
+.bank-picker-hint{margin:0 0 10px;font-size:12.5px;color:var(--ink-3);line-height:1.5}
+.bank-picker-btns{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
+.bank-pick{display:flex;flex-direction:column;align-items:flex-start;gap:4px;padding:12px 14px;border:1.5px solid var(--line-2);border-radius:10px;background:var(--bg-2);cursor:pointer;text-align:left;font:inherit;color:var(--ink-2);transition:border-color .15s,background .15s}
+.bank-pick:hover{border-color:var(--line-3);background:var(--bg-3)}
+.bank-pick.on{border-color:var(--gold);background:rgba(201,164,76,.12);color:var(--ink);box-shadow:inset 0 0 0 1px rgba(201,164,76,.25)}
+.bank-pick-title{font-weight:600;font-size:13.5px}
+.bank-pick-sub{font-size:11.5px;color:var(--ink-3);word-break:break-all}
+.bank-pick.on .bank-pick-sub{color:var(--ink-2)}
 .seg-i{border:none;background:transparent;color:var(--ink-3);padding:7px 13px;border-radius:7px;font-size:12.5px;font-weight:600;transition:all .14s;}
 .seg-i:hover{color:var(--ink);}
 .seg-i.on{background:var(--gold-soft);color:var(--gold-2);box-shadow:inset 0 0 0 1px var(--gold-line);}
