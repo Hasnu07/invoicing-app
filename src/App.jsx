@@ -373,6 +373,24 @@ async function fileToScaledDataURL(file, max = 440) {
 
 // ----------------------------------------------------- Numbering / themes ---
 const effectiveTheme = (company, doc) => ({ ...DEFAULT_THEME, ...(company?.theme || {}), ...(doc?.themeOverride || {}) });
+
+function brandTemplateFor(company, isAcquisition) {
+  const n = (company?.name || '').toLowerCase();
+  if (/almas/.test(n)) return isAcquisition ? TPL_ALMAS_BUY : TPL_ALMAS;
+  if (/estival/.test(n)) return isAcquisition ? TPL_ESTIVAL_BUY : TPL_ESTIVAL;
+  if (/purosangue motors/.test(n)) return isAcquisition ? TPL_PURO_MOTORS_BUY : TPL_PURO_MOTORS;
+  if (/purosangue watches/.test(n)) return isAcquisition ? TPL_PURO_WATCHES_BUY : TPL_PURO_WATCHES;
+  return '';
+}
+
+function normalizeDocPayment(doc, company) {
+  const pay = { method: 'Bank transfer', iban: '', terms: '', bankAccount: 'primary', ...(doc.payment || {}) };
+  if (!pay.bankAccount) pay.bankAccount = 'primary';
+  if (!pay.iban && company) {
+    pay.iban = pay.bankAccount === 'secondary' ? (company.iban2 || '') : (company.iban || '');
+  }
+  return pay;
+}
 const formatDocNumber = (type, seq, year) => `${DOC_TYPES[type]?.short || ''} ${seq}/${year}`.trim();
 function nextSeq(documents, companyId, type, year) {
   return (documents || [])
@@ -471,7 +489,8 @@ function mergeCompanyBankDefaults(company) {
 
 function resolveActiveBank(company, doc) {
   if (!company) return {};
-  const useSecondary = (doc.payment && doc.payment.bankAccount) === 'secondary' && companyHasBank2(company);
+  const bankAccount = (doc.payment && doc.payment.bankAccount) || 'primary';
+  const useSecondary = bankAccount === 'secondary' && companyHasBank2(company);
   if (useSecondary) {
     return {
       bank: company.bank2 || '',
@@ -937,7 +956,10 @@ function buildDocumentHTML(doc, company, client, settings, opts = {}) {
       has_bank2: companyHasBank2(company),
       stamp_block: stampHTML,
     };
-    const tpl = (doc.type === 'acquisto' && t.customHTMLBuy && t.customHTMLBuy.trim()) ? t.customHTMLBuy : ((t.customHTML && t.customHTML.trim()) ? t.customHTML : CUSTOM_STARTER);
+    const isAcquisition = doc.type === 'acquisto';
+    const brandTpl = brandTemplateFor(company, isAcquisition);
+    const storedTpl = isAcquisition ? (t.customHTMLBuy && t.customHTMLBuy.trim()) : (t.customHTML && t.customHTML.trim());
+    const tpl = brandTpl || storedTpl || CUSTOM_STARTER;
     const rendered = sanitizeHTML(renderTemplate(tpl, ctx));
     if (/<!doctype|<html[\s>]/i.test(rendered)) {
       return sanitizeHTML(injectStampIntoFirstPage(rendered, stampHTML));
@@ -2172,6 +2194,10 @@ function normalizeStore(raw) {
   if (s.settings.defaultCompanyId && !s.companies.some((c) => c.id === s.settings.defaultCompanyId)) {
     s.settings.defaultCompanyId = s.companies[0] ? s.companies[0].id : '';
   }
+  s.documents = s.documents.map((d) => {
+    const co = s.companies.find((c) => c.id === d.companyId);
+    return co ? { ...d, payment: normalizeDocPayment(d, co) } : d;
+  });
   return applyAutoStatuses(s);
 }
 
@@ -3192,7 +3218,13 @@ function QuickClientModal({ open, onClose, onCreate }) {
 // ============================================================================
 function DocumentEditor({ store, editingId, draftType, onSave, onCancel, onUpsertClient, onAddClientFile, onDeleteClientFile, onUpdateCompany, onNotify }) {
   const existing = editingId ? (store.documents || []).find((d) => d.id === editingId) : null;
-  const [draft, setDraft] = useState(() => (existing ? JSON.parse(JSON.stringify(existing)) : freshDoc(store, draftType || 'fattura')));
+  const [draft, setDraft] = useState(() => {
+    if (!existing) return freshDoc(store, draftType || 'fattura');
+    const d = JSON.parse(JSON.stringify(existing));
+    const co = companyById(store, d.companyId);
+    d.payment = normalizeDocPayment(d, co);
+    return d;
+  });
   const [numTouched, setNumTouched] = useState(!!existing);
   const [quickClient, setQuickClient] = useState(false);
   const [sellerDocsOpen, setSellerDocsOpen] = useState(false);
@@ -3243,7 +3275,7 @@ function DocumentEditor({ store, editingId, draftType, onSave, onCancel, onUpser
 
   const regenNumber = () => { const y = yearOf(draft.date); const seq = nextSeq((store.documents || []).filter((d) => d.id !== draft.id), draft.companyId, draft.type, y); setNumTouched(true); setDraft((d) => ({ ...d, seq, year: y, number: formatDocNumber(d.type, seq, y) })); };
   const save = () => {
-    const d = { ...draft };
+    const d = { ...draft, payment: normalizeDocPayment(draft, company) };
     if (!d.number) d.number = formatDocNumber(d.type, d.seq, d.year);
     const ps = parseInt(d.seq); if (!isNaN(ps)) d.seq = ps;
     const dup = findDuplicateDocNumber(store.documents, d, d.id);
