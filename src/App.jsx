@@ -445,6 +445,41 @@ function companyName(c) {
   return esc((c.name || '') + (fg ? '' : '')) + (fg ? `<span class="fg">${esc(c.forma)}</span>` : '');
 }
 
+function companyHasBank2(c) {
+  return !!(c && (c.iban2 || c.bank2));
+}
+
+function resolveActiveBank(company, doc) {
+  if (!company) return {};
+  const useSecondary = (doc.payment && doc.payment.bankAccount) === 'secondary' && companyHasBank2(company);
+  if (useSecondary) {
+    return {
+      bank: company.bank2 || '',
+      iban: company.iban2 || '',
+      iban_plain: (company.iban2 || '').replace(/\s+/g, ''),
+      swift: company.swift2 || '',
+      currency: company.bank2Currency || company.currency || 'EUR',
+      holder: company.bank2Holder || company.name || '',
+      holder_nif: company.bank2Nif || company.piva || '',
+      holder_address: company.bank2Address || company.address || '',
+      holder_city: [company.bank2Cap, company.bank2City].filter(Boolean).join(' ') || [company.cap, company.city].filter(Boolean).join(' '),
+      label: company.bank2Label || company.bank2 || 'Secondary account',
+    };
+  }
+  return {
+    bank: company.bank || '',
+    iban: company.iban || '',
+    iban_plain: (company.iban || '').replace(/\s+/g, ''),
+    swift: company.swift || '',
+    currency: company.currency || 'EUR',
+    holder: company.name || '',
+    holder_nif: company.piva || '',
+    holder_address: company.address || '',
+    holder_city: [company.cap, company.city].filter(Boolean).join(' '),
+    label: company.bankLabel || company.bank || 'Primary account',
+  };
+}
+
 function buildDocumentHTML(doc, company, client, settings, opts = {}) {
   const omitStamp = !!opts.omitStamp;
   const t = effectiveTheme(company, doc);
@@ -798,6 +833,7 @@ function buildDocumentHTML(doc, company, client, settings, opts = {}) {
     const dfmt = (iso, sep) => { const p = String(iso || '').split('-'); return p.length === 3 ? p[2] + sep + p[1] + sep + p[0] : (iso || ''); };
     const vatRates = totals ? totals.ivaBreakdown.map((b) => b.rate) : [];
     const vatRateLabel = vatRates.length === 1 ? `(${vatRates[0]}%)` : '';
+    const activeBank = resolveActiveBank(company, doc);
     const ctx = {
       type_label: meta.label,
       number: doc.number || formatDocNumber(doc.type, doc.seq, doc.year),
@@ -848,9 +884,11 @@ function buildDocumentHTML(doc, company, client, settings, opts = {}) {
       },
       payment: {
         method: (doc.payment && doc.payment.method) || '',
-        iban: (doc.payment && doc.payment.iban) || (company && company.iban) || '',
+        iban: (doc.payment && doc.payment.iban) || activeBank.iban || '',
         terms: (doc.payment && doc.payment.terms) || '',
+        bank_account: (doc.payment && doc.payment.bankAccount) || 'primary',
       },
+      active_bank: activeBank,
       transport: {
         reason: tr.causale || '', appearance: tr.aspetto || '', packages: tr.colli || '', weight: tr.peso || '',
         carrier: tr.vettore || '', carriage: tr.porto || '', date: dateFmt(tr.date), time: tr.time || '', remarks: tr.annotazioni || '',
@@ -876,6 +914,7 @@ function buildDocumentHTML(doc, company, client, settings, opts = {}) {
       has_payment: !!meta.money, has_withholding: !!(totals && totals.ritenuta > 0),
       has_fund: !!(totals && totals.cassaAmount > 0), has_stamp: !!(totals && totals.bollo > 0),
       has_logo: !!(t.showLogo && logoSrc), is_goods: isGoods, has_values: showValues,
+      has_bank2: companyHasBank2(company),
       stamp_block: stampHTML,
     };
     const tpl = (doc.type === 'acquisto' && t.customHTMLBuy && t.customHTMLBuy.trim()) ? t.customHTMLBuy : ((t.customHTML && t.customHTML.trim()) ? t.customHTML : CUSTOM_STARTER);
@@ -1190,15 +1229,22 @@ body{margin:0;font-family:Arial,'Helvetica Neue',Helvetica,sans-serif;color:#2b2
     <div style="text-align:right"><div class="cap">Currency</div><div class="cur ser">{{currency}}</div></div>
   </div>
   <div class="rule"></div>
-  <div class="bdlbl">Banking details</div>
+  <div class="bdlbl">Bank Details</div>
   <div class="bankcard">
-    <div class="bk ser">{{company.bank}}</div>
+    <div class="bk ser">{{active_bank.bank}}</div>
     <div class="bkrule"></div>
     <div class="grid">
-      <div><div class="cap">Bank name</div><div class="val ser">{{company.bank}}</div></div>
-      <div><div class="cap">Company name</div><div class="val ser">{{company.name}}</div></div>
-      {{#company.iban}}<div><div class="cap">IBAN</div><div class="val ser">{{company.iban_plain}}</div></div>{{/company.iban}}
-      {{#company.swift}}<div><div class="cap">SWIFT / BIC</div><div class="val ser">{{company.swift}}</div></div>{{/company.swift}}
+      {{#active_bank.iban}}<div><div class="cap">IBAN</div><div class="val ser">{{active_bank.iban_plain}}</div></div>{{/active_bank.iban}}
+      <div><div class="cap">Currency</div><div class="val ser">{{active_bank.currency}}</div></div>
+      {{#active_bank.swift}}<div><div class="cap">BIC / SWIFT</div><div class="val ser">{{active_bank.swift}}</div></div>{{/active_bank.swift}}
+      <div><div class="cap">Bank</div><div class="val ser">{{active_bank.bank}}</div></div>
+    </div>
+    <div class="bdlbl" style="margin-top:20px">Account Holder</div>
+    <div class="grid" style="margin-top:12px">
+      <div><div class="cap">Name</div><div class="val ser">{{active_bank.holder}}</div></div>
+      {{#active_bank.holder_nif}}<div><div class="cap">NIF</div><div class="val ser">{{active_bank.holder_nif}}</div></div>{{/active_bank.holder_nif}}
+      {{#active_bank.holder_address}}<div><div class="cap">Address</div><div class="val ser">{{active_bank.holder_address}}</div></div>{{/active_bank.holder_address}}
+      {{#active_bank.holder_city}}<div><div class="cap">Postal Code / City</div><div class="val ser">{{active_bank.holder_city}}</div></div>{{/active_bank.holder_city}}
     </div>
   </div>
   <div class="ft" style="margin-top:24mm">{{company.name}} &nbsp;&middot;&nbsp; {{company.address}}, {{company.cap}} {{company.city}}, {{company.country}}<br/>EORI &mdash; Active and valid for customs purposes &middot; VIES Registered</div>
@@ -1773,6 +1819,11 @@ function seedStore() {
       address: 'Rua Pascoal de Melo, n.º 3, 1.º andar, Porta 5', cap: '1170-294', city: 'Lisboa', prov: '', country: 'Portugal',
       email: 'accounts@almaselitistas.com', phone: '+351 920 108 581', pec: '', sdi: '', rea: '', capitale: '',
       bank: 'NOVOBANCO', iban: 'PT50 0007 0000 0087 0744 4602 3', swift: 'BESCPTPL',
+      bankLabel: 'NOVOBANCO',
+      bank2Label: 'Millennium bcp',
+      bank2: 'Millennium bcp - Portugal', iban2: 'PT50 0033 0000 4583 2997 0290 5', swift2: 'BCOMPTPL', bank2Currency: 'EUR',
+      bank2Holder: 'Almas Elitistas Unip Lda', bank2Nif: '519283627',
+      bank2Address: 'R PASCOAL MELO 3 1 PORTA 5', bank2Cap: '1170-294', bank2City: 'LISBOA',
       bankInfo: 'Company: Almas Elitistas Unipessoal LDA\nBank Name: NOVOBANCO\nIBAN: PT50 0007 0000 0087 0744 4602 3\nSWIFT / BIC: BESCPTPL',
       currency: 'EUR',
       causaleFiscale: 'Margin scheme - Second-hand goods. Article 313 of Council Directive 2006/112/EC and Decree-Law 199/96 of 18 October. VAT not separately chargeable.',
@@ -1821,7 +1872,7 @@ function seedStore() {
     cassa: { enabled: false, rate: 4, iva: 22 },
     ritenuta: { enabled: false, rate: 20, base: 'imponibile' },
     bollo: { enabled: false, amount: 2 },
-    payment: { method: 'Bank transfer', iban: '', terms: '' },
+    payment: { method: 'Bank transfer', iban: '', terms: '', bankAccount: 'primary' },
     transport: { causale: '', aspetto: '', colli: '', peso: '', vettore: '', porto: '', date: '', time: '', annotazioni: '' },
     themeOverride: {}, createdAt: Date.now(),
     ...over,
@@ -2807,7 +2858,7 @@ function freshDoc(store, type) {
     cassa: { enabled: false, rate: 4, iva: 22 },
     ritenuta: { enabled: false, rate: 20, base: 'imponibile' },
     bollo: { enabled: false, amount: 2 },
-    payment: { method: 'Bank transfer', iban: (co && co.iban) || '', terms: '' },
+    payment: { method: 'Bank transfer', iban: (co && co.iban) || '', terms: '', bankAccount: 'primary' },
     transport: { causale: '', aspetto: '', colli: '', peso: '', vettore: '', porto: '', date: todayISO(), time: '', annotazioni: '' },
     themeOverride: {}, createdAt: Date.now(),
   };
@@ -2825,7 +2876,7 @@ function sampleDocForCompany(co) {
     ],
     notes: 'Thank you for your business.', causaleFiscale: '',
     cassa: { enabled: false, rate: 4, iva: 22 }, ritenuta: { enabled: false, rate: 20, base: 'imponibile' }, bollo: { enabled: false, amount: 2 },
-    payment: { method: 'Bank transfer', iban: co.iban || '', terms: 'Payment within 30 days of invoice date.' },
+    payment: { method: 'Bank transfer', iban: co.iban || '', terms: 'Payment within 30 days of invoice date.', bankAccount: 'primary' },
     transport: {}, themeOverride: {}, createdAt: Date.now(),
   };
 }
@@ -3272,10 +3323,25 @@ function DocumentEditor({ store, editingId, draftType, onSave, onCancel, onUpser
             {meta.money && (
               <Collapsible title="Payment" icon={CreditCard}>
                 <div className="form-grid">
+                  {companyHasBank2(company) && (
+                    <Field label="Bank account" full hint="Which bank details appear on the invoice payment page">
+                      <Segmented
+                        value={draft.payment.bankAccount || 'primary'}
+                        onChange={(v) => {
+                          const iban = v === 'secondary' ? (company.iban2 || '') : (company.iban || '');
+                          patchObj('payment', { bankAccount: v, iban });
+                        }}
+                        options={[
+                          { value: 'primary', label: company.bankLabel || company.bank || 'Primary' },
+                          { value: 'secondary', label: company.bank2Label || company.bank2 || 'Secondary' },
+                        ]}
+                      />
+                    </Field>
+                  )}
                   <Field label="Method"><Select value={draft.payment.method} onChange={(v) => patchObj('payment', { method: v })} options={PAYMENT_METHODS} /></Field>
                   <Field label="IBAN"><div className="inline">
                     <TextInput value={draft.payment.iban} onChange={(v) => patchObj('payment', { iban: v })} mono placeholder="IT00 0000 0000 0000 0000 0000 000" />
-                    {company && company.iban && <Btn variant="subtle" size="sm" onClick={() => patchObj('payment', { iban: company.iban })}>From company</Btn>}
+                    {company && company.iban && <Btn variant="subtle" size="sm" onClick={() => patchObj('payment', { iban: (draft.payment.bankAccount === 'secondary' ? company.iban2 : company.iban) || company.iban })}>From company</Btn>}
                   </div></Field>
                   <Field label="Payment terms" full><TextArea value={draft.payment.terms} onChange={(v) => patchObj('payment', { terms: v })} rows={2} /></Field>
                 </div>
@@ -3343,7 +3409,7 @@ function DocumentEditor({ store, editingId, draftType, onSave, onCancel, onUpser
 // ============================================================================
 //  COMPANIES
 // ============================================================================
-function blankCompany() { return { id: uid(), name: '', forma: '', regime: 'Standard', piva: '', cf: '', address: '', cap: '', city: '', prov: '', country: '', email: '', phone: '', pec: '', sdi: '', rea: '', capitale: '', bank: '', iban: '', swift: '', bankInfo: '', currency: 'EUR', causaleFiscale: '', acqSellerDecl: '', acqBuyerNote: '', acqVatNote: '', footerText: '', logo: '', theme: { ...DEFAULT_THEME } }; }
+function blankCompany() { return { id: uid(), name: '', forma: '', regime: 'Standard', piva: '', cf: '', address: '', cap: '', city: '', prov: '', country: '', email: '', phone: '', pec: '', sdi: '', rea: '', capitale: '', bank: '', iban: '', swift: '', bankLabel: '', bankInfo: '', bank2Label: '', bank2: '', iban2: '', swift2: '', bank2Currency: 'EUR', bank2Holder: '', bank2Nif: '', bank2Address: '', bank2Cap: '', bank2City: '', currency: 'EUR', causaleFiscale: '', acqSellerDecl: '', acqBuyerNote: '', acqVatNote: '', footerText: '', logo: '', theme: { ...DEFAULT_THEME } }; }
 function CompaniesView({ store, onNew, onEdit, onDelete, onSetDefault, onNotify }) {
   const [delFor, setDelFor] = useState(null);
   const docCount = delFor ? companyDocCount(store, delFor.id) : 0;
@@ -3452,11 +3518,22 @@ function CompanyEditor({ store, editingId, onSave, onCancel }) {
                 <Field label="SDI code"><TextInput value={co.sdi} onChange={(v) => set('sdi', v)} mono /></Field>
                 <Field label="REA"><TextInput value={co.rea} onChange={(v) => set('rea', v)} mono /></Field>
                 <Field label="Share capital"><TextInput value={co.capitale} onChange={(v) => set('capitale', v)} /></Field>
-                <Field label="Bank"><TextInput value={co.bank} onChange={(v) => set('bank', v)} /></Field>
+                <Field label="Bank" hint="Primary account"><TextInput value={co.bank} onChange={(v) => set('bank', v)} /></Field>
+                <Field label="Account label" hint="Short name for the bank switcher"><TextInput value={co.bankLabel || ''} onChange={(v) => set('bankLabel', v)} placeholder="e.g. NOVOBANCO" /></Field>
                 <Field label="SWIFT / BIC"><TextInput value={co.swift || ''} onChange={(v) => set('swift', v)} mono /></Field>
                 <Field label="IBAN" full><TextInput value={co.iban} onChange={(v) => set('iban', v)} mono /></Field>
                 <Field label="Default currency"><Select value={co.currency || 'EUR'} onChange={(v) => set('currency', v)} options={CURRENCIES} /></Field>
                 <Field label="Bank details block" full hint="Multi-line; shown on the document via {{{company.bank_info}}}"><TextArea value={co.bankInfo || ''} onChange={(v) => set('bankInfo', v)} rows={3} /></Field>
+                <Field label="Second bank — label" hint="Optional second account for invoices"><TextInput value={co.bank2Label || ''} onChange={(v) => set('bank2Label', v)} placeholder="e.g. Millennium bcp" /></Field>
+                <Field label="Second bank — name"><TextInput value={co.bank2 || ''} onChange={(v) => set('bank2', v)} placeholder="e.g. Millennium bcp - Portugal" /></Field>
+                <Field label="Second bank — IBAN" full><TextInput value={co.iban2 || ''} onChange={(v) => set('iban2', v)} mono /></Field>
+                <Field label="Second bank — SWIFT / BIC"><TextInput value={co.swift2 || ''} onChange={(v) => set('swift2', v)} mono /></Field>
+                <Field label="Second bank — currency"><Select value={co.bank2Currency || 'EUR'} onChange={(v) => set('bank2Currency', v)} options={CURRENCIES} /></Field>
+                <Field label="Second bank — holder name"><TextInput value={co.bank2Holder || ''} onChange={(v) => set('bank2Holder', v)} /></Field>
+                <Field label="Second bank — holder NIF"><TextInput value={co.bank2Nif || ''} onChange={(v) => set('bank2Nif', v)} mono /></Field>
+                <Field label="Second bank — holder address" full><TextInput value={co.bank2Address || ''} onChange={(v) => set('bank2Address', v)} /></Field>
+                <Field label="Second bank — postal code"><TextInput value={co.bank2Cap || ''} onChange={(v) => set('bank2Cap', v)} mono /></Field>
+                <Field label="Second bank — city"><TextInput value={co.bank2City || ''} onChange={(v) => set('bank2City', v)} /></Field>
                 <Field label="Default tax / legal note" full hint="Auto-fills new documents (e.g. margin scheme statement)"><TextArea value={co.causaleFiscale || ''} onChange={(v) => set('causaleFiscale', v)} rows={2} /></Field>
                 <Field label="Purchase note — Seller declaration" full hint="Acquisition note (purchase invoice): shown above the seller signature"><TextArea value={co.acqSellerDecl || ''} onChange={(v) => set('acqSellerDecl', v)} rows={2} /></Field>
                 <Field label="Purchase note — Buyer note" full hint="Acquisition note: buyer / compliance note"><TextArea value={co.acqBuyerNote || ''} onChange={(v) => set('acqBuyerNote', v)} rows={2} /></Field>
