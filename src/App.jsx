@@ -483,9 +483,15 @@ function companyHasBank2(c) {
 }
 
 function mergeCompanyBankDefaults(company) {
-  if (!company || !/almas/i.test(company.name || '')) return company;
-  if (companyHasBank2(company)) return company;
-  return { ...company, ...ALMAS_BANK2_DEFAULTS };
+  if (!company) return company;
+  const name = String(company.name || '').toLowerCase();
+  const patch = {};
+  if (!company.eori) {
+    if (name.includes('estival')) patch.eori = '518361438';
+    if (name.includes('almas')) patch.eori = '519283627';
+  }
+  if (name.includes('almas') && !companyHasBank2(company)) Object.assign(patch, ALMAS_BANK2_DEFAULTS);
+  return Object.keys(patch).length ? { ...company, ...patch } : company;
 }
 
 function resolveActiveBank(company, doc) {
@@ -1831,7 +1837,7 @@ function seedStore() {
   const companies = [
     {
       id: c1, name: 'Estival Habitual Unipessoal LDA', forma: '', regime: 'Margin scheme',
-      piva: 'PT518361438', cf: '',
+      piva: 'PT518361438', eori: '518361438', cf: '',
       address: 'Rua Gomes de Brito 4, 2ºB', cap: '', city: 'Lisbon', prov: '', country: 'Portugal',
       email: 'accounts@estivalhabitual.com', phone: '+351 910 758 420', pec: '', sdi: '', rea: '', capitale: '',
       bank: 'NOVOBANCO', iban: 'PT50 0007 0000 0076 9504 4932 3', swift: 'BESCPTPL',
@@ -1861,7 +1867,7 @@ function seedStore() {
     },
     {
       id: c3, name: 'Almas Elitistas Unipessoal, LDA', forma: '', regime: 'Margin scheme',
-      piva: 'PT 519283627', eori: 'PT519283627', cf: '',
+      piva: 'PT 519283627', eori: '519283627', cf: '',
       address: 'Rua Pascoal de Melo, n.º 3, 1.º andar, Porta 5', cap: '1170-294', city: 'Lisboa', prov: '', country: 'Portugal',
       email: 'accounts@almaselitistas.com', phone: '+351 920 108 581', pec: '', sdi: '', rea: '', capitale: '',
       bank: 'NOVOBANCO', iban: 'PT50 0007 0000 0087 0744 4602 3', swift: 'BESCPTPL',
