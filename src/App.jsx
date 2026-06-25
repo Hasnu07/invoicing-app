@@ -444,6 +444,7 @@ function computeTotals(doc) {
 function partyTax(p) {
   if (!p) return '';
   const rows = [];
+  if (p.eori) rows.push(`EORI ${esc(p.eori)}`);
   if (p.piva) rows.push(`VAT ${esc(p.piva)}`);
   if (p.cf && p.cf !== p.piva) rows.push(`Tax Code ${esc(p.cf)}`);
   return rows.join(' · ');
@@ -897,7 +898,7 @@ function buildDocumentHTML(doc, company, client, settings, opts = {}) {
       company: company ? {
         name: company.name || '', forma: company.forma || '', address: company.address || '', cap: company.cap || '',
         city: company.city || '', prov: company.prov || '', country: company.country || '',
-        vat: company.piva || '', taxcode: company.cf || '', sdi: company.sdi || '', pec: company.pec || '',
+        vat: company.piva || '', eori: company.eori || '', taxcode: company.cf || '', sdi: company.sdi || '', pec: company.pec || '',
         rea: company.rea || '', capital: company.capitale || '', email: company.email || '', phone: company.phone || '',
         bank: company.bank || '', iban: company.iban || '', swift: company.swift || '',
         iban_plain: (company.iban || '').replace(/\s+/g, ''),
@@ -1056,6 +1057,7 @@ body{margin:0;font-family:'Montserrat',Arial,sans-serif;color:#2b2b2b;font-size:
     <div class="cobox">
       <div class="nm">{{company.name}}</div>
       <div class="b">{{company.address}}{{#company.city}} {{company.city}}{{/company.city}} {{company.country}}</div>
+      {{#company.eori}}<div class="b">EORI# {{company.eori}}</div>{{/company.eori}}
       {{#company.vat}}<div class="b">VAT# {{company.vat}}</div>{{/company.vat}}
       {{#company.email}}<div>{{company.email}}</div>{{/company.email}}
       {{#company.phone}}<div>{{company.phone}}</div>{{/company.phone}}
@@ -1205,6 +1207,7 @@ body{margin:0;font-family:Arial,'Helvetica Neue',Helvetica,sans-serif;color:#2b2
       <div>{{company.address}}</div>
       <div>{{company.cap}} {{company.city}}, {{company.country}}</div>
       <div class="kv">
+        {{#company.eori}}<div class="row"><span class="k">EORI:</span><span class="v">{{company.eori}}</span></div>{{/company.eori}}
         {{#company.vat}}<div class="row"><span class="k">VAT:</span><span class="v">{{company.vat}}</span></div>{{/company.vat}}
         <div class="row"><span class="k">Date:</span><span class="v">{{date_sp}}</span></div>
         {{#has_due}}<div class="row"><span class="k">Due date:</span><span class="v">{{due_date_sp}}</span></div>{{/has_due}}
@@ -1473,6 +1476,7 @@ body{margin:0;font-family:Arial,'Helvetica Neue',Helvetica,sans-serif;color:#1f1
   <div class="head"><div class="hbox">
     {{#has_logo}}<img src="{{company.logo}}" alt=""/>{{/has_logo}}{{^has_logo}}<div style="font-weight:700;font-size:20px;color:#821916">{{company.name}}</div>{{/has_logo}}
     <div class="ad">{{company.address}}{{#company.city}} {{company.cap}} {{company.city}} {{company.country}}{{/company.city}}</div>
+    {{#company.eori}}<div class="vat">EORI: {{company.eori}}</div>{{/company.eori}}
     {{#company.vat}}<div class="vat">VAT: {{company.vat}}</div>{{/company.vat}}
   </div></div>
   <div class="hr"></div>
@@ -1578,14 +1582,14 @@ body{margin:0;font-family:'Montserrat',Arial,sans-serif;color:#2b2b2b;font-size:
 <div class="page">
   <div class="ahead">
     <div class="alogo">{{#has_logo}}<img src="{{company.logo}}" alt=""/>{{/has_logo}}{{^has_logo}}<div class="nmfb">{{company.name}}</div>{{/has_logo}}</div>
-    <div class="acontact">{{#company.email}}<div>{{company.email}}</div>{{/company.email}}{{#company.phone}}<div>{{company.phone}}</div>{{/company.phone}}<div>{{company.address}}{{#company.city}}, {{company.city}}{{/company.city}}{{#company.country}}, {{company.country}}{{/company.country}}</div>{{#company.vat}}<div>VAT# {{company.vat}}</div>{{/company.vat}}</div>
+    <div class="acontact">{{#company.email}}<div>{{company.email}}</div>{{/company.email}}{{#company.phone}}<div>{{company.phone}}</div>{{/company.phone}}<div>{{company.address}}{{#company.city}}, {{company.city}}{{/company.city}}{{#company.country}}, {{company.country}}{{/company.country}}</div>{{#company.eori}}<div>EORI# {{company.eori}}</div>{{/company.eori}}{{#company.vat}}<div>VAT# {{company.vat}}</div>{{/company.vat}}</div>
   </div>
 
   <div class="atitle">Purchase Invoice / Acquisition Note</div>
   <div class="ameta">
     <div class="abox"><div class="h">Voucher No</div><div class="v vb">{{number}}</div><div class="h" style="margin-top:9px">Date</div><div class="v vb">{{date_dot}}</div></div>
     <div class="abox"><div class="h">Seller</div><div class="v"><span class="b">{{client.name}}</span><br/>{{client.address}}{{#client.cap}}, {{client.cap}}{{/client.cap}}{{#client.city}}<br/>{{client.city}}{{/client.city}}{{#client.country}}, {{client.country}}{{/client.country}}{{#client.email}}<br/>{{client.email}}{{/client.email}}{{#client.vat}}<br/>VAT# {{client.vat}}{{/client.vat}}</div></div>
-    <div class="abox"><div class="h">Buyer</div><div class="v"><span class="b">{{company.name}}</span><br/>{{company.address}}{{#company.city}}<br/>{{company.city}}{{/company.city}}{{#company.cap}} {{company.cap}}{{/company.cap}}{{#company.country}}<br/>{{company.country}}{{/company.country}}{{#company.vat}}<br/>VAT# {{company.vat}}{{/company.vat}}</div></div>
+    <div class="abox"><div class="h">Buyer</div><div class="v"><span class="b">{{company.name}}</span><br/>{{company.address}}{{#company.city}}<br/>{{company.city}}{{/company.city}}{{#company.cap}} {{company.cap}}{{/company.cap}}{{#company.country}}<br/>{{company.country}}{{/company.country}}{{#company.eori}}<br/>EORI# {{company.eori}}{{/company.eori}}{{#company.vat}}<br/>VAT# {{company.vat}}{{/company.vat}}</div></div>
   </div>
   <table class="atbl">
     <thead><tr><th>Description</th><th class="r">Purchase price</th></tr></thead>
@@ -1647,14 +1651,14 @@ body{margin:0;font-family:Arial,'Helvetica Neue',Helvetica,sans-serif;color:#1f1
 <div class="page">
   <div class="ahead">
     <div class="alogo">{{#has_logo}}<img src="{{company.logo}}" alt=""/>{{/has_logo}}{{^has_logo}}<div class="nmfb">{{company.name}}</div>{{/has_logo}}</div>
-    <div class="acontact">{{#company.email}}<div>{{company.email}}</div>{{/company.email}}{{#company.phone}}<div>{{company.phone}}</div>{{/company.phone}}<div>{{company.address}}{{#company.city}}, {{company.city}}{{/company.city}}{{#company.country}}, {{company.country}}{{/company.country}}</div>{{#company.vat}}<div>VAT# {{company.vat}}</div>{{/company.vat}}</div>
+    <div class="acontact">{{#company.email}}<div>{{company.email}}</div>{{/company.email}}{{#company.phone}}<div>{{company.phone}}</div>{{/company.phone}}<div>{{company.address}}{{#company.city}}, {{company.city}}{{/company.city}}{{#company.country}}, {{company.country}}{{/company.country}}</div>{{#company.eori}}<div>EORI# {{company.eori}}</div>{{/company.eori}}{{#company.vat}}<div>VAT# {{company.vat}}</div>{{/company.vat}}</div>
   </div>
 
   <div class="atitle">Purchase Invoice / Acquisition Note</div>
   <div class="ameta">
     <div class="abox"><div class="h">Voucher No</div><div class="v vb">{{number}}</div><div class="h" style="margin-top:9px">Date</div><div class="v vb">{{date_dot}}</div></div>
     <div class="abox"><div class="h">Seller</div><div class="v"><span class="b">{{client.name}}</span><br/>{{client.address}}{{#client.cap}}, {{client.cap}}{{/client.cap}}{{#client.city}}<br/>{{client.city}}{{/client.city}}{{#client.country}}, {{client.country}}{{/client.country}}{{#client.email}}<br/>{{client.email}}{{/client.email}}{{#client.vat}}<br/>VAT# {{client.vat}}{{/client.vat}}</div></div>
-    <div class="abox"><div class="h">Buyer</div><div class="v"><span class="b">{{company.name}}</span><br/>{{company.address}}{{#company.city}}<br/>{{company.city}}{{/company.city}}{{#company.cap}} {{company.cap}}{{/company.cap}}{{#company.country}}<br/>{{company.country}}{{/company.country}}{{#company.vat}}<br/>VAT# {{company.vat}}{{/company.vat}}</div></div>
+    <div class="abox"><div class="h">Buyer</div><div class="v"><span class="b">{{company.name}}</span><br/>{{company.address}}{{#company.city}}<br/>{{company.city}}{{/company.city}}{{#company.cap}} {{company.cap}}{{/company.cap}}{{#company.country}}<br/>{{company.country}}{{/company.country}}{{#company.eori}}<br/>EORI# {{company.eori}}{{/company.eori}}{{#company.vat}}<br/>VAT# {{company.vat}}{{/company.vat}}</div></div>
   </div>
   <table class="atbl">
     <thead><tr><th>Description</th><th class="r">Purchase price</th></tr></thead>
@@ -1716,14 +1720,14 @@ body{margin:0;font-family:Arial,'Helvetica Neue',Helvetica,sans-serif;color:#1f1
 <div class="page">
   <div class="ahead">
     <div class="alogo">{{#has_logo}}<img src="{{company.logo}}" alt=""/>{{/has_logo}}{{^has_logo}}<div class="nmfb">{{company.name}}</div>{{/has_logo}}</div>
-    <div class="acontact">{{#company.email}}<div>{{company.email}}</div>{{/company.email}}{{#company.phone}}<div>{{company.phone}}</div>{{/company.phone}}<div>{{company.address}}{{#company.city}}, {{company.city}}{{/company.city}}{{#company.country}}, {{company.country}}{{/company.country}}</div>{{#company.vat}}<div>VAT# {{company.vat}}</div>{{/company.vat}}</div>
+    <div class="acontact">{{#company.email}}<div>{{company.email}}</div>{{/company.email}}{{#company.phone}}<div>{{company.phone}}</div>{{/company.phone}}<div>{{company.address}}{{#company.city}}, {{company.city}}{{/company.city}}{{#company.country}}, {{company.country}}{{/company.country}}</div>{{#company.eori}}<div>EORI# {{company.eori}}</div>{{/company.eori}}{{#company.vat}}<div>VAT# {{company.vat}}</div>{{/company.vat}}</div>
   </div>
 
   <div class="atitle">Purchase Invoice / Acquisition Note</div>
   <div class="ameta">
     <div class="abox"><div class="h">Voucher No</div><div class="v vb">{{number}}</div><div class="h" style="margin-top:9px">Date</div><div class="v vb">{{date_dot}}</div></div>
     <div class="abox"><div class="h">Seller</div><div class="v"><span class="b">{{client.name}}</span><br/>{{client.address}}{{#client.cap}}, {{client.cap}}{{/client.cap}}{{#client.city}}<br/>{{client.city}}{{/client.city}}{{#client.country}}, {{client.country}}{{/client.country}}{{#client.email}}<br/>{{client.email}}{{/client.email}}{{#client.vat}}<br/>VAT# {{client.vat}}{{/client.vat}}</div></div>
-    <div class="abox"><div class="h">Buyer</div><div class="v"><span class="b">{{company.name}}</span><br/>{{company.address}}{{#company.city}}<br/>{{company.city}}{{/company.city}}{{#company.cap}} {{company.cap}}{{/company.cap}}{{#company.country}}<br/>{{company.country}}{{/company.country}}{{#company.vat}}<br/>VAT# {{company.vat}}{{/company.vat}}</div></div>
+    <div class="abox"><div class="h">Buyer</div><div class="v"><span class="b">{{company.name}}</span><br/>{{company.address}}{{#company.city}}<br/>{{company.city}}{{/company.city}}{{#company.cap}} {{company.cap}}{{/company.cap}}{{#company.country}}<br/>{{company.country}}{{/company.country}}{{#company.eori}}<br/>EORI# {{company.eori}}{{/company.eori}}{{#company.vat}}<br/>VAT# {{company.vat}}{{/company.vat}}</div></div>
   </div>
   <table class="atbl">
     <thead><tr><th>Description</th><th class="r">Purchase price</th></tr></thead>
@@ -1789,14 +1793,14 @@ body{margin:0;font-family:Arial,'Helvetica Neue',Helvetica,sans-serif;color:#2b2
 <div class="page">
   <div class="ahead">
     <div class="alogo">{{#has_logo}}<img src="{{company.logo}}" alt=""/>{{/has_logo}}{{^has_logo}}<div class="nmfb">{{company.name}}</div>{{/has_logo}}</div>
-    <div class="acontact">{{#company.email}}<div>{{company.email}}</div>{{/company.email}}{{#company.phone}}<div>{{company.phone}}</div>{{/company.phone}}<div>{{company.address}}{{#company.city}}, {{company.city}}{{/company.city}}{{#company.country}}, {{company.country}}{{/company.country}}</div>{{#company.vat}}<div>VAT# {{company.vat}}</div>{{/company.vat}}</div>
+    <div class="acontact">{{#company.email}}<div>{{company.email}}</div>{{/company.email}}{{#company.phone}}<div>{{company.phone}}</div>{{/company.phone}}<div>{{company.address}}{{#company.city}}, {{company.city}}{{/company.city}}{{#company.country}}, {{company.country}}{{/company.country}}</div>{{#company.eori}}<div>EORI# {{company.eori}}</div>{{/company.eori}}{{#company.vat}}<div>VAT# {{company.vat}}</div>{{/company.vat}}</div>
   </div>
 
   <div class="atitle">Purchase Invoice / Acquisition Note</div>
   <div class="ameta">
     <div class="abox"><div class="h">Voucher No</div><div class="v vb">{{number}}</div><div class="h" style="margin-top:9px">Date</div><div class="v vb">{{date_dot}}</div></div>
     <div class="abox"><div class="h">Seller</div><div class="v"><span class="b">{{client.name}}</span><br/>{{client.address}}{{#client.cap}}, {{client.cap}}{{/client.cap}}{{#client.city}}<br/>{{client.city}}{{/client.city}}{{#client.country}}, {{client.country}}{{/client.country}}{{#client.email}}<br/>{{client.email}}{{/client.email}}{{#client.vat}}<br/>VAT# {{client.vat}}{{/client.vat}}</div></div>
-    <div class="abox"><div class="h">Buyer</div><div class="v"><span class="b">{{company.name}}</span><br/>{{company.address}}{{#company.city}}<br/>{{company.city}}{{/company.city}}{{#company.cap}} {{company.cap}}{{/company.cap}}{{#company.country}}<br/>{{company.country}}{{/company.country}}{{#company.vat}}<br/>VAT# {{company.vat}}{{/company.vat}}</div></div>
+    <div class="abox"><div class="h">Buyer</div><div class="v"><span class="b">{{company.name}}</span><br/>{{company.address}}{{#company.city}}<br/>{{company.city}}{{/company.city}}{{#company.cap}} {{company.cap}}{{/company.cap}}{{#company.country}}<br/>{{company.country}}{{/company.country}}{{#company.eori}}<br/>EORI# {{company.eori}}{{/company.eori}}{{#company.vat}}<br/>VAT# {{company.vat}}{{/company.vat}}</div></div>
   </div>
   <table class="atbl">
     <thead><tr><th>Description</th><th class="r">Purchase price</th></tr></thead>
@@ -1857,7 +1861,7 @@ function seedStore() {
     },
     {
       id: c3, name: 'Almas Elitistas Unipessoal, LDA', forma: '', regime: 'Margin scheme',
-      piva: 'PT 519283627', cf: '',
+      piva: 'PT 519283627', eori: 'PT519283627', cf: '',
       address: 'Rua Pascoal de Melo, n.º 3, 1.º andar, Porta 5', cap: '1170-294', city: 'Lisboa', prov: '', country: 'Portugal',
       email: 'accounts@almaselitistas.com', phone: '+351 920 108 581', pec: '', sdi: '', rea: '', capitale: '',
       bank: 'NOVOBANCO', iban: 'PT50 0007 0000 0087 0744 4602 3', swift: 'BESCPTPL',
@@ -3482,7 +3486,7 @@ function DocumentEditor({ store, editingId, draftType, onSave, onCancel, onUpser
 // ============================================================================
 //  COMPANIES
 // ============================================================================
-function blankCompany() { return { id: uid(), name: '', forma: '', regime: 'Standard', piva: '', cf: '', address: '', cap: '', city: '', prov: '', country: '', email: '', phone: '', pec: '', sdi: '', rea: '', capitale: '', bank: '', iban: '', swift: '', bankLabel: '', bankInfo: '', bank2Label: '', bank2: '', iban2: '', swift2: '', bank2Currency: 'EUR', bank2Holder: '', bank2Nif: '', bank2Address: '', bank2Cap: '', bank2City: '', currency: 'EUR', causaleFiscale: '', acqSellerDecl: '', acqBuyerNote: '', acqVatNote: '', footerText: '', logo: '', theme: { ...DEFAULT_THEME } }; }
+function blankCompany() { return { id: uid(), name: '', forma: '', regime: 'Standard', piva: '', eori: '', cf: '', address: '', cap: '', city: '', prov: '', country: '', email: '', phone: '', pec: '', sdi: '', rea: '', capitale: '', bank: '', iban: '', swift: '', bankLabel: '', bankInfo: '', bank2Label: '', bank2: '', iban2: '', swift2: '', bank2Currency: 'EUR', bank2Holder: '', bank2Nif: '', bank2Address: '', bank2Cap: '', bank2City: '', currency: 'EUR', causaleFiscale: '', acqSellerDecl: '', acqBuyerNote: '', acqVatNote: '', footerText: '', logo: '', theme: { ...DEFAULT_THEME } }; }
 function CompaniesView({ store, onNew, onEdit, onDelete, onSetDefault, onNotify }) {
   const [delFor, setDelFor] = useState(null);
   const docCount = delFor ? companyDocCount(store, delFor.id) : 0;
@@ -3579,6 +3583,7 @@ function CompanyEditor({ store, editingId, onSave, onCancel }) {
                 <Field label="Legal form"><Select value={co.forma} onChange={(v) => set('forma', v)} options={FORME_GIURIDICHE} /></Field>
                 <Field label="Tax scheme"><Select value={co.regime} onChange={(v) => set('regime', v)} options={REGIMI} /></Field>
                 <Field label="VAT No."><TextInput value={co.piva} onChange={(v) => set('piva', v)} mono /></Field>
+                <Field label="EORI No."><TextInput value={co.eori || ''} onChange={(v) => set('eori', v)} mono /></Field>
                 <Field label="Tax code"><TextInput value={co.cf} onChange={(v) => set('cf', v)} mono /></Field>
                 <Field label="Address" full><TextInput value={co.address} onChange={(v) => set('address', v)} /></Field>
                 <Field label="Postal code"><TextInput value={co.cap} onChange={(v) => set('cap', v)} mono /></Field>
