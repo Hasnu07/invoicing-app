@@ -485,10 +485,11 @@ function companyHasBank2(c) {
 function mergeCompanyBankDefaults(company) {
   if (!company) return company;
   const name = String(company.name || '').toLowerCase();
+  const vatDigits = String(company.piva || '').replace(/\D/g, '');
   const patch = {};
   if (!company.eori) {
-    if (name.includes('estival')) patch.eori = '518361438';
-    if (name.includes('almas')) patch.eori = '519283627';
+    if (name.includes('estival') || vatDigits === '518361438') patch.eori = '518361438';
+    if (name.includes('almas') || vatDigits === '519283627') patch.eori = '519283627';
   }
   if (name.includes('almas') && !companyHasBank2(company)) Object.assign(patch, ALMAS_BANK2_DEFAULTS);
   return Object.keys(patch).length ? { ...company, ...patch } : company;
